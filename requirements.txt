@@ -1,0 +1,5 @@
+streamlit
+reportlab
+pyzbar
+pillow
+pandas
