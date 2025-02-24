@@ -1,11 +1,10 @@
 import os
 import streamlit as st
 
-# Set the environment variable for pyzbar.
-# Update the path below to point to your ZBar DLL if available.
-os.environ["PYZBAR_LIBRARY"] = r"C:\Program Files (x86)\ZBar\bin\libzbar-64.dll"
+# Set PYZBAR_LIBRARY for Windows (update the path if needed)
+if os.name == 'nt':
+    os.environ["PYZBAR_LIBRARY"] = r"C:\Program Files (x86)\ZBar\bin\libzbar-64.dll"
 
-# Try to import pyzbar. If it fails, disable barcode scanning.
 try:
     from pyzbar.pyzbar import decode
     barcode_scanner_enabled = True
@@ -18,6 +17,7 @@ import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from PIL import Image
+from datetime import datetime
 
 # MUST call set_page_config as the very first Streamlit command.
 st.set_page_config(page_title="Professional Inventory Management", layout="wide")
@@ -53,7 +53,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 if not barcode_scanner_enabled:
-    st.warning("Barcode scanning functionality is disabled because the ZBar DLL was not found. You can still enter barcodes manually.")
+    st.warning("Barcode scanning functionality is disabled because the ZBar DLL could not be loaded. You can still enter barcodes manually.")
 
 # -----------------------------
 # Helper Function to Hash Text
@@ -67,22 +67,40 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Create Users table if it doesn't exist
+# Create Users table (with approved flag)
 c.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         role TEXT NOT NULL,
-        pin TEXT NOT NULL
+        pin TEXT NOT NULL,
+        approved INTEGER NOT NULL DEFAULT 0
     )
 ''')
-# Insert default admin user if no users exist
+conn.commit()
+
+# Create login_requests table
+c.execute('''
+    CREATE TABLE IF NOT EXISTS login_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+''')
+conn.commit()
+
+# Insert default users if table is empty: 2 admins (approved=1) and 2 staff (approved=0)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
-    c.execute("INSERT INTO users (name, role, pin) VALUES (?, ?, ?)", ("Admin", "admin", hash_text("1234")))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin2", "admin", hash_text("admin2pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 0))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 0))
     conn.commit()
 
-# Create Categories table if it doesn't exist
+# Create Categories table
 c.execute('''
     CREATE TABLE IF NOT EXISTS categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,7 +108,7 @@ c.execute('''
     )
 ''')
 
-# Create Items table if it doesn't exist (includes threshold for low stock)
+# Create Items table (with threshold for low stock)
 c.execute('''
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,10 +120,65 @@ c.execute('''
         FOREIGN KEY (category) REFERENCES categories(name)
     )
 ''')
+
+# Create Transactions table to log item take events
+c.execute('''
+    CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        item_id INTEGER NOT NULL,
+        quantity_taken INTEGER NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (item_id) REFERENCES items(id)
+    )
+''')
 conn.commit()
 
 # -----------------------------
-# DATABASE HELPER FUNCTIONS
+# Additional Helper Functions for Login Requests
+# -----------------------------
+def add_login_request(user_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    # Check if there's already a pending request for this user.
+    c.execute("SELECT id FROM login_requests WHERE user_id=? AND status='pending'", (user_id,))
+    if not c.fetchone():
+        c.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+    conn.close()
+
+def get_pending_login_requests():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT lr.id, u.name, lr.timestamp 
+        FROM login_requests lr 
+        JOIN users u ON lr.user_id = u.id 
+        WHERE lr.status='pending'
+        ORDER BY lr.timestamp ASC
+    """)
+    requests = c.fetchall()
+    conn.close()
+    return requests
+
+def approve_user_request(user_id, request_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE users SET approved = 1 WHERE id = ?", (user_id,))
+    c.execute("UPDATE login_requests SET status = 'approved' WHERE id = ?", (request_id,))
+    conn.commit()
+    conn.close()
+
+def deny_user_request(request_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE login_requests SET status = 'denied' WHERE id = ?", (request_id,))
+    conn.commit()
+    conn.close()
+
+# -----------------------------
+# DATABASE HELPER FUNCTIONS (Continued)
 # -----------------------------
 def get_db_connection():
     return sqlite3.connect("inventory.db", check_same_thread=False)
@@ -114,11 +187,15 @@ def authenticate(username, pin):
     conn = get_db_connection()
     c = conn.cursor()
     hashed = hash_text(pin)
-    c.execute("SELECT role FROM users WHERE name=? AND pin=?", (username, hashed))
+    c.execute("SELECT id, role, approved FROM users WHERE name=? AND pin=?", (username, hashed))
     user = c.fetchone()
     conn.close()
     if user:
-        return user[0]
+        user_id, role, approved = user
+        if role == "staff" and approved == 0:
+            add_login_request(user_id)
+            return "pending"
+        return role
     return None
 
 def add_category(name):
@@ -167,6 +244,14 @@ def get_items():
     conn.close()
     return items
 
+def get_items_by_category(category):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name, barcode, quantity, threshold FROM items WHERE category=?", (category,))
+    items = c.fetchall()
+    conn.close()
+    return items
+
 def update_item_quantity(barcode, quantity):
     conn = get_db_connection()
     c = conn.cursor()
@@ -184,8 +269,9 @@ def delete_item(barcode):
 def add_user(name, role, pin):
     conn = get_db_connection()
     c = conn.cursor()
+    approved = 1 if role == "admin" else 0  # Staff require admin approval.
     try:
-        c.execute("INSERT INTO users (name, role, pin) VALUES (?, ?, ?)", (name, role, hash_text(pin)))
+        c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", (name, role, hash_text(pin), approved))
         conn.commit()
         conn.close()
         return True
@@ -197,7 +283,7 @@ def add_user(name, role, pin):
 def get_users():
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, role FROM users")
+    c.execute("SELECT id, name, role, approved FROM users")
     users = c.fetchall()
     conn.close()
     return users
@@ -212,7 +298,7 @@ def delete_user(user_id):
 def get_user_by_username(username):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+    c.execute("SELECT id, name, role, approved FROM users WHERE LOWER(name)=LOWER(?)", (username,))
     user = c.fetchone()
     conn.close()
     return user
@@ -223,6 +309,27 @@ def update_user_credentials(user_id, new_name, new_pin):
     c.execute("UPDATE users SET name=?, pin=? WHERE id=?", (new_name, hash_text(new_pin), user_id))
     conn.commit()
     conn.close()
+
+def add_transaction(user_id, item_id, quantity_taken):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)", (user_id, item_id, quantity_taken))
+    conn.commit()
+    conn.close()
+
+def get_transactions():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT t.id, u.name, i.name, i.barcode, t.quantity_taken, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        JOIN items i ON t.item_id = i.id 
+        ORDER BY t.timestamp DESC
+    """)
+    transactions = c.fetchall()
+    conn.close()
+    return transactions
 
 # -----------------------------
 # PDF REPORT GENERATION USING REPORTLAB
@@ -271,9 +378,14 @@ def display_low_stock_alerts():
 display_low_stock_alerts()
 
 # -----------------------------
-# STREAMLIT UI
+# STREAMLIT UI & ROLE-BASED NAVIGATION
 # -----------------------------
-st.sidebar.title("📦 Inventory Management")
+if st.session_state.get("role") == "admin":
+    nav = st.sidebar.radio("Navigation", ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Account Settings"])
+elif st.session_state.get("role") == "staff":
+    nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings"])
+else:
+    nav = st.sidebar.radio("Navigation", ["Home", "View Inventory", "Account Settings"])
 
 # -----------------------------
 # LOGIN SECTION
@@ -289,7 +401,9 @@ if not st.session_state.logged_in:
     pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
     if st.button("Login"):
         role = authenticate(username, pin)
-        if role:
+        if role == "pending":
+            st.error("Your account is pending admin approval. Please contact an administrator.")
+        elif role:
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.username = username
@@ -299,7 +413,6 @@ if not st.session_state.logged_in:
     st.stop()
 
 st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_state.role.capitalize()})")
-nav = st.sidebar.radio("Navigation", ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Account Settings"])
 
 # -----------------------------
 # HOME PAGE
@@ -309,7 +422,7 @@ if nav == "Home":
     st.write("Welcome to the Professional Inventory Management System.")
 
 # -----------------------------
-# MANAGE CATEGORIES
+# MANAGE CATEGORIES (Admin)
 # -----------------------------
 elif nav == "Manage Categories":
     st.markdown("<div class='header'>📂 Manage Categories</div>", unsafe_allow_html=True)
@@ -325,7 +438,7 @@ elif nav == "Manage Categories":
         st.write("No categories available.")
 
 # -----------------------------
-# ADD ITEMS
+# ADD ITEMS (Admin)
 # -----------------------------
 elif nav == "Add Items":
     st.markdown("<div class='header'>📦 Add New Item</div>", unsafe_allow_html=True)
@@ -345,7 +458,7 @@ elif nav == "Add Items":
                     if decoded:
                         decoded_barcode = decoded[0].data.decode("utf-8")
                         st.success(f"Decoded Barcode: {decoded_barcode}")
-                        barcode = decoded_barcode  # Use the decoded value
+                        barcode = decoded_barcode
                     else:
                         st.error("No barcode detected. Try another image.")
                 except Exception as e:
@@ -364,7 +477,52 @@ elif nav == "Add Items":
         st.warning("No categories available. Please add a category first.")
 
 # -----------------------------
-# VIEW INVENTORY
+# TAKE ITEMS (Staff Only)
+# -----------------------------
+elif nav == "Take Items" and st.session_state.role == "staff":
+    st.markdown("<div class='header'>📦 Take Items</div>", unsafe_allow_html=True)
+    cats = get_categories()
+    if cats:
+        selected_category = st.selectbox("Select Category", cats)
+        def get_items_by_category(category):
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT id, name, barcode, quantity, threshold FROM items WHERE category=?", (category,))
+            items = c.fetchall()
+            conn.close()
+            return items
+        items_in_cat = get_items_by_category(selected_category)
+        if items_in_cat:
+            item_options = {f"{item[1]} (Qty: {item[3]})": item for item in items_in_cat}
+            selected_item_str = st.selectbox("Select Item", list(item_options.keys()))
+            selected_item = item_options[selected_item_str]
+            st.write(f"Selected: {selected_item[1]}, Current Qty: {selected_item[3]}, Threshold: {selected_item[4]}")
+            take_qty = st.number_input("Quantity to take", min_value=1, max_value=selected_item[3], step=1)
+            if st.button("Take Item"):
+                new_qty = selected_item[3] - take_qty
+                if new_qty < 0:
+                    st.error("Not enough stock available.")
+                else:
+                    update_item_quantity(selected_item[2], new_qty)
+                    # Record transaction
+                    current_user = get_user_by_username(st.session_state.username)
+                    if current_user:
+                        def add_transaction(user_id, item_id, quantity_taken):
+                            conn = get_db_connection()
+                            c = conn.cursor()
+                            c.execute("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)",
+                                      (user_id, selected_item[0], quantity_taken))
+                            conn.commit()
+                            conn.close()
+                        add_transaction(current_user[0], selected_item[0], take_qty)
+                    st.success(f"Took {take_qty} of {selected_item[1]}. New quantity: {new_qty}.")
+        else:
+            st.write("No items found in this category.")
+    else:
+        st.write("No categories available.")
+
+# -----------------------------
+# VIEW INVENTORY (For All)
 # -----------------------------
 elif nav == "View Inventory":
     st.markdown("<div class='header'>📋 Inventory Items</div>", unsafe_allow_html=True)
@@ -409,10 +567,43 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully!")
             else:
                 st.error("Please enter valid user details.")
+        st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
+        def get_pending_login_requests():
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("""
+                SELECT lr.id, u.name, lr.timestamp 
+                FROM login_requests lr 
+                JOIN users u ON lr.user_id = u.id 
+                WHERE lr.status = 'pending'
+                ORDER BY lr.timestamp ASC
+            """)
+            reqs = c.fetchall()
+            conn.close()
+            return reqs
+        pending_requests = get_pending_login_requests()
+        if pending_requests:
+            df_pending = pd.DataFrame(pending_requests, columns=["Request ID", "Username", "Timestamp"])
+            st.table(df_pending)
+            for req in pending_requests:
+                req_id, uname, ts = req
+                if st.button(f"Approve {uname}'s Request", key=f"approve_{req_id}"):
+                    user = get_user_by_username(uname)
+                    if user:
+                        approve_user(user[0])
+                        # Also mark the request as approved
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("UPDATE login_requests SET status = 'approved' WHERE id = ?", (req_id,))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"User '{uname}' approved.")
+        else:
+            st.write("No pending login requests.")
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
-            df_users = pd.DataFrame(users, columns=["User ID", "Username", "Role"])
+            df_users = pd.DataFrame(users, columns=["User ID", "Username", "Role", "Approved"])
             st.table(df_users)
             for user in users:
                 if st.button(f"Delete User {user[0]}", key=f"user_{user[0]}"):
@@ -424,18 +615,41 @@ elif nav == "User Management":
         st.error("Access denied. Admins only.")
 
 # -----------------------------
-# REPORTS
+# REPORTS (Admin Only)
 # -----------------------------
 elif nav == "Reports":
-    st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
-    if st.button("Generate PDF Report"):
-        generate_pdf()
-        st.success("PDF Report generated: inventory_report.pdf")
-        if os.path.exists("inventory_report.pdf"):
-            with open("inventory_report.pdf", "rb") as f:
-                st.download_button("Download Report", f, file_name="inventory_report.pdf")
+    if st.session_state.role == "admin":
+        st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
+        if st.button("Generate PDF Report"):
+            generate_pdf()
+            st.success("PDF Report generated: inventory_report.pdf")
+            if os.path.exists("inventory_report.pdf"):
+                with open("inventory_report.pdf", "rb") as f:
+                    st.download_button("Download Report", f, file_name="inventory_report.pdf")
+            else:
+                st.error("Report generation failed.")
+        st.markdown("<div class='subheader'>Transaction Log:</div>", unsafe_allow_html=True)
+        def get_transactions():
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("""
+                SELECT t.id, u.name, i.name, i.barcode, t.quantity_taken, t.timestamp 
+                FROM transactions t 
+                JOIN users u ON t.user_id = u.id 
+                JOIN items i ON t.item_id = i.id 
+                ORDER BY t.timestamp DESC
+            """)
+            transactions = c.fetchall()
+            conn.close()
+            return transactions
+        transactions = get_transactions()
+        if transactions:
+            df_trans = pd.DataFrame(transactions, columns=["Trans ID", "User", "Item", "Barcode", "Quantity Taken", "Timestamp"])
+            st.table(df_trans)
         else:
-            st.error("Report generation failed.")
+            st.write("No transactions recorded yet.")
+    else:
+        st.error("Access denied. Admins only.")
 
 # -----------------------------
 # ACCOUNT SETTINGS (Change Username & PIN)
@@ -445,7 +659,7 @@ elif nav == "Account Settings":
     def get_user_by_username(username):
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+        c.execute("SELECT id, name, role, approved FROM users WHERE LOWER(name)=LOWER(?)", (username,))
         user = c.fetchone()
         conn.close()
         return user
