@@ -81,7 +81,7 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins (approved) and 2 staff (pending)
+# Insert default users if table is empty: 2 admins (approved) and 2 staff (each login must be approved every time)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -115,7 +115,7 @@ c.execute(
     """
 )
 
-# Create Transactions table to log item take events
+# Create Transactions table
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -137,10 +137,9 @@ conn.commit()
 def add_login_request(user_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    c2.execute("SELECT id FROM login_requests WHERE user_id=? AND status='pending'", (user_id,))
-    if not c2.fetchone():
-        c2.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
-        conn2.commit()
+    # Always add a new request on each staff login attempt.
+    c2.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
+    conn2.commit()
     conn2.close()
 
 def get_pending_login_requests():
@@ -162,15 +161,16 @@ def get_pending_login_requests():
 def approve_user_request(user_id, request_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    c2.execute("UPDATE users SET approved = 1 WHERE id = ?", (user_id,))
-    c2.execute("UPDATE login_requests SET status = 'approved' WHERE id = ?", (request_id,))
+    c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (request_id,))
     conn2.commit()
     conn2.close()
+    # We do NOT update the user's approved flag permanently.
+    # Instead, approval is granted only for that login attempt.
 
 def deny_user_request(request_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    c2.execute("UPDATE login_requests SET status = 'denied' WHERE id = ?", (request_id,))
+    c2.execute("UPDATE login_requests SET status='denied' WHERE id=?", (request_id,))
     conn2.commit()
     conn2.close()
 
@@ -184,12 +184,13 @@ def authenticate(username, pin):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     hashed = hash_text(pin)
-    c2.execute("SELECT id, role, approved FROM users WHERE name=? AND pin=?", (username, hashed))
+    c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hashed))
     row = c2.fetchone()
     conn2.close()
     if row:
-        user_id, role, approved = row
-        if role == "staff" and approved == 0:
+        user_id, role = row
+        if role == "staff":
+            # Always require admin approval for staff every login attempt.
             add_login_request(user_id)
             return "pending"
         return role
@@ -252,19 +253,19 @@ def get_items_by_category(category):
 def update_item_quantity(barcode, quantity):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("UPDATE items SET quantity = ? WHERE barcode = ?", (quantity, barcode))
+    c2.execute("UPDATE items SET quantity=? WHERE barcode=?", (quantity, barcode))
     conn2.commit()
     conn2.close()
 
 def delete_item(barcode):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("DELETE FROM items WHERE barcode = ?", (barcode,))
+    c2.execute("DELETE FROM items WHERE barcode=?", (barcode,))
     conn2.commit()
     conn2.close()
 
 def add_user(name, role, pin):
-    approved = 1 if role == "admin" else 0
+    approved = 1 if role == "admin" else 0  # Staff always require approval on each login attempt.
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     try:
@@ -288,7 +289,7 @@ def get_users():
 def delete_user(user_id):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    c2.execute("DELETE FROM users WHERE id=?", (user_id,))
     conn2.commit()
     conn2.close()
 
@@ -559,18 +560,19 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully!")
             else:
                 st.error("Please enter valid user details.")
-
         st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
         def get_pending_login_requests():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute("""
+            c2.execute(
+                """
                 SELECT lr.id, u.name, lr.timestamp 
                 FROM login_requests lr 
                 JOIN users u ON lr.user_id = u.id 
                 WHERE lr.status = 'pending'
                 ORDER BY lr.timestamp ASC
-            """)
+                """
+            )
             reqs = c2.fetchall()
             conn2.close()
             return reqs
@@ -589,14 +591,13 @@ elif nav == "User Management":
                         if user_info:
                             approve_user_request(user_info[0], req_id)
                             st.success(f"Approved {uname}'s request.")
-                            st.experimental_rerun()
+                            st.rerun()
                     if st.button(f"Deny {uname}'s Request", key=f"deny_{req_id}"):
                         deny_user_request(req_id)
                         st.warning(f"Denied {uname}'s request.")
-                        st.experimental_rerun()
+                        st.rerun()
         else:
             st.write("No pending login requests.")
-
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
@@ -629,13 +630,15 @@ elif nav == "Reports":
         def get_transactions():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute("""
+            c2.execute(
+                """
                 SELECT t.id, u.name, i.name, i.barcode, t.quantity_taken, t.timestamp 
                 FROM transactions t 
                 JOIN users u ON t.user_id = u.id 
                 JOIN items i ON t.item_id = i.id 
                 ORDER BY t.timestamp DESC
-            """)
+                """
+            )
             trans = c2.fetchall()
             conn2.close()
             return trans
@@ -649,7 +652,7 @@ elif nav == "Reports":
         st.error("Access denied. Admins only.")
 
 # --------------------------------------------------------------------
-# ACCOUNT SETTINGS (Change Username & PIN)
+# ACCOUNT SETTINGS
 # --------------------------------------------------------------------
 elif nav == "Account Settings":
     st.markdown("<div class='header'>⚙️ Account Settings</div>", unsafe_allow_html=True)
