@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 
-# Set PYZBAR_LIBRARY for Windows – update the path if necessary.
+# Set PYZBAR_LIBRARY for Windows (update the path if necessary)
 if os.name == 'nt':
     os.environ["PYZBAR_LIBRARY"] = r"C:\Program Files (x86)\ZBar\bin\libzbar-64.dll"
 
@@ -48,7 +48,7 @@ def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 # --------------------------------------------------------------------
-# DATABASE SETUP (Persistent Mode)
+# DATABASE SETUP
 # --------------------------------------------------------------------
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
@@ -75,6 +75,20 @@ c.execute(
         user_id INTEGER NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    """
+)
+conn.commit()
+
+# Create login_log table to record every successful login
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS login_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
     """
@@ -132,7 +146,7 @@ c.execute(
 conn.commit()
 
 # --------------------------------------------------------------------
-# Additional Helper Functions for Login Requests
+# Additional Helper Functions for Login Requests & Login Log
 # --------------------------------------------------------------------
 def add_login_request(user_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
@@ -164,13 +178,20 @@ def approve_user_request(user_id, request_id):
     c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (request_id,))
     conn2.commit()
     conn2.close()
-    # Note: We do NOT update the user's approved flag permanently;
-    # approval is granted only for that login attempt.
-    
+    # Note: We do NOT permanently change the user's 'approved' flag.
+    # Approval is granted only for that login attempt.
+
 def deny_user_request(request_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute("UPDATE login_requests SET status='denied' WHERE id=?", (request_id,))
+    conn2.commit()
+    conn2.close()
+
+def add_login_log(user_id, username):
+    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
+    c2 = conn2.cursor()
+    c2.execute("INSERT INTO login_log (user_id, username) VALUES (?, ?)", (user_id, username))
     conn2.commit()
     conn2.close()
 
@@ -190,15 +211,16 @@ def authenticate(username, pin):
     if row:
         user_id, role = row
         if role == "staff":
-            # For every login attempt, require admin approval:
-            # Check if there is an approved login request not yet consumed:
+            # For every login attempt, require admin approval.
+            add_login_request(user_id)
+            # Check if there's an approved request (i.e. admin just approved)
             conn3 = get_db_connection()
             c3 = conn3.cursor()
             c3.execute("SELECT id FROM login_requests WHERE user_id=? AND status='approved'", (user_id,))
             approved_req = c3.fetchone()
             conn3.close()
             if approved_req:
-                # Consume the approved request and allow login:
+                # Consume the approved request and allow login.
                 approved_id = approved_req[0]
                 conn3 = get_db_connection()
                 c3 = conn3.cursor()
@@ -207,8 +229,6 @@ def authenticate(username, pin):
                 conn3.close()
                 return role
             else:
-                # No approved request: add a new login request and return "pending"
-                add_login_request(user_id)
                 return "pending"
         return role
     return None
@@ -393,7 +413,10 @@ display_low_stock_alerts()
 # STREAMLIT UI & ROLE-BASED NAVIGATION
 # --------------------------------------------------------------------
 if st.session_state.get("role") == "admin":
-    nav = st.sidebar.radio("Navigation", ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Account Settings"])
+    nav = st.sidebar.radio(
+        "Navigation",
+        ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Entry Log", "Account Settings"]
+    )
 elif st.session_state.get("role") == "staff":
     nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings"])
 else:
@@ -416,6 +439,10 @@ if not st.session_state.logged_in:
         if role == "pending":
             st.error("Your account is pending admin approval. Please contact an administrator.")
         elif role:
+            # Log successful login event
+            user_info = get_user_by_username(username)
+            if user_info:
+                add_login_log(user_info[0], username)
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.username = username
@@ -432,6 +459,28 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
     st.write("Welcome to the Professional Inventory Management System.")
+
+# --------------------------------------------------------------------
+# ENTRY LOG (Admin Only)
+# --------------------------------------------------------------------
+elif nav == "Entry Log":
+    if st.session_state.role == "admin":
+        st.markdown("<div class='header'>📜 Entry Log</div>", unsafe_allow_html=True)
+        def get_login_log():
+            conn2 = get_db_connection()
+            c2 = conn2.cursor()
+            c2.execute("SELECT id, user_id, username, timestamp FROM login_log ORDER BY timestamp DESC")
+            log_entries = c2.fetchall()
+            conn2.close()
+            return log_entries
+        log_entries = get_login_log()
+        if log_entries:
+            df_log = pd.DataFrame(log_entries, columns=["Log ID", "User ID", "Username", "Timestamp"])
+            st.table(df_log)
+        else:
+            st.write("No login entries recorded yet.")
+    else:
+        st.error("Access denied. Admins only.")
 
 # --------------------------------------------------------------------
 # MANAGE CATEGORIES (Admin)
@@ -577,7 +626,6 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully!")
             else:
                 st.error("Please enter valid user details.")
-
         st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
         def get_pending_login_requests():
             conn2 = get_db_connection()
@@ -616,7 +664,6 @@ elif nav == "User Management":
                         st.rerun()
         else:
             st.write("No pending login requests.")
-
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
