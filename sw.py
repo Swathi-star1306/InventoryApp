@@ -81,7 +81,7 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins (approved) and 2 staff (each login must be approved every time)
+# Insert default users if table is empty: 2 admins (approved) and 2 staff (login approval required each time)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -115,7 +115,7 @@ c.execute(
     """
 )
 
-# Create Transactions table
+# Create Transactions table to log item take events
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -137,7 +137,7 @@ conn.commit()
 def add_login_request(user_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    # Always add a new request on each staff login attempt.
+    # Always add a new login request on each staff login attempt.
     c2.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
     conn2.commit()
     conn2.close()
@@ -164,9 +164,9 @@ def approve_user_request(user_id, request_id):
     c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (request_id,))
     conn2.commit()
     conn2.close()
-    # We do NOT update the user's approved flag permanently.
-    # Instead, approval is granted only for that login attempt.
-
+    # Note: We do NOT update the user's approved flag permanently;
+    # approval is granted only for that login attempt.
+    
 def deny_user_request(request_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
@@ -190,9 +190,26 @@ def authenticate(username, pin):
     if row:
         user_id, role = row
         if role == "staff":
-            # Always require admin approval for staff every login attempt.
-            add_login_request(user_id)
-            return "pending"
+            # For every login attempt, require admin approval:
+            # Check if there is an approved login request not yet consumed:
+            conn3 = get_db_connection()
+            c3 = conn3.cursor()
+            c3.execute("SELECT id FROM login_requests WHERE user_id=? AND status='approved'", (user_id,))
+            approved_req = c3.fetchone()
+            conn3.close()
+            if approved_req:
+                # Consume the approved request and allow login:
+                approved_id = approved_req[0]
+                conn3 = get_db_connection()
+                c3 = conn3.cursor()
+                c3.execute("DELETE FROM login_requests WHERE id=?", (approved_id,))
+                conn3.commit()
+                conn3.close()
+                return role
+            else:
+                # No approved request: add a new login request and return "pending"
+                add_login_request(user_id)
+                return "pending"
         return role
     return None
 
@@ -265,7 +282,7 @@ def delete_item(barcode):
     conn2.close()
 
 def add_user(name, role, pin):
-    approved = 1 if role == "admin" else 0  # Staff always require approval on each login attempt.
+    approved = 1 if role == "admin" else 0
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     try:
@@ -560,6 +577,7 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully!")
             else:
                 st.error("Please enter valid user details.")
+
         st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
         def get_pending_login_requests():
             conn2 = get_db_connection()
@@ -582,7 +600,7 @@ elif nav == "User Management":
             st.table(df_requests)
             for req in pending_requests:
                 req_id, uname, ts = req
-                colA, colB = st.columns([2,1])
+                colA, colB = st.columns([2, 1])
                 with colA:
                     st.write(f"Request {req_id}: {uname} at {ts}")
                 with colB:
@@ -598,6 +616,7 @@ elif nav == "User Management":
                         st.rerun()
         else:
             st.write("No pending login requests.")
+
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
