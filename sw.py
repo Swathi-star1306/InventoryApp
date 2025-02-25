@@ -81,7 +81,7 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if none exist: 2 admins (approved) and 2 staff (pending)
+# Insert default users if table is empty: 2 admins (approved) and 2 staff (pending)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -100,7 +100,7 @@ c.execute(
     """
 )
 
-# Create Items table (with threshold)
+# Create Items table (with threshold for low stock)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS items (
@@ -115,7 +115,7 @@ c.execute(
     """
 )
 
-# Create Transactions table
+# Create Transactions table to log item take events
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -135,7 +135,7 @@ conn.commit()
 # Additional Helper Functions for Login Requests
 # --------------------------------------------------------------------
 def add_login_request(user_id):
-    conn2 = get_db_connection()
+    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute("SELECT id FROM login_requests WHERE user_id=? AND status='pending'", (user_id,))
     if not c2.fetchone():
@@ -144,14 +144,14 @@ def add_login_request(user_id):
     conn2.close()
 
 def get_pending_login_requests():
-    conn2 = get_db_connection()
+    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute(
         """
         SELECT lr.id, u.name, lr.timestamp 
         FROM login_requests lr 
         JOIN users u ON lr.user_id = u.id 
-        WHERE lr.status = 'pending'
+        WHERE lr.status='pending'
         ORDER BY lr.timestamp ASC
         """
     )
@@ -160,7 +160,7 @@ def get_pending_login_requests():
     return reqs
 
 def approve_user_request(user_id, request_id):
-    conn2 = get_db_connection()
+    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute("UPDATE users SET approved = 1 WHERE id = ?", (user_id,))
     c2.execute("UPDATE login_requests SET status = 'approved' WHERE id = ?", (request_id,))
@@ -168,7 +168,7 @@ def approve_user_request(user_id, request_id):
     conn2.close()
 
 def deny_user_request(request_id):
-    conn2 = get_db_connection()
+    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute("UPDATE login_requests SET status = 'denied' WHERE id = ?", (request_id,))
     conn2.commit()
@@ -361,7 +361,7 @@ def generate_pdf():
 # --------------------------------------------------------------------
 def display_low_stock_alerts():
     items = get_items()
-    low_stock = [item for item in items if item[4] < item[5]]  # quantity < threshold
+    low_stock = [item for item in items if item[4] < item[5]]
     if low_stock:
         st.sidebar.markdown("<div class='low-stock'><b>Low Stock Alerts:</b></div>", unsafe_allow_html=True)
         for item in low_stock:
@@ -470,7 +470,7 @@ elif nav == "Add Items":
         st.warning("No categories available. Please add a category first.")
 
 # --------------------------------------------------------------------
-# TAKE ITEMS (Staff Only)
+# TAKE ITEMS (Staff)
 # --------------------------------------------------------------------
 elif nav == "Take Items" and st.session_state.role == "staff":
     st.markdown("<div class='header'>📦 Take Items</div>", unsafe_allow_html=True)
@@ -503,7 +503,7 @@ elif nav == "Take Items" and st.session_state.role == "staff":
                             conn2 = get_db_connection()
                             c2 = conn2.cursor()
                             c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)",
-                                      (user_id, selected_item[0], quantity_taken))
+                                       (user_id, selected_item[0], quantity_taken))
                             conn2.commit()
                             conn2.close()
                         add_transaction(current_user[0], selected_item[0], take_qty)
@@ -559,6 +559,7 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully!")
             else:
                 st.error("Please enter valid user details.")
+
         st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
         def get_pending_login_requests():
             conn2 = get_db_connection()
@@ -586,20 +587,16 @@ elif nav == "User Management":
                     if st.button(f"Approve {uname}'s Request", key=f"approve_{req_id}"):
                         user_info = get_user_by_username(uname)
                         if user_info:
-                            approve_user(user_info[0])
-                            conn2 = get_db_connection()
-                            c2 = conn2.cursor()
-                            c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (req_id,))
-                            conn2.commit()
-                            conn2.close()
+                            approve_user_request(user_info[0], req_id)
                             st.success(f"Approved {uname}'s request.")
-                            st.rerun()
+                            st.experimental_rerun()
                     if st.button(f"Deny {uname}'s Request", key=f"deny_{req_id}"):
                         deny_user_request(req_id)
                         st.warning(f"Denied {uname}'s request.")
-                        st.rerun()
+                        st.experimental_rerun()
         else:
             st.write("No pending login requests.")
+
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
@@ -642,9 +639,9 @@ elif nav == "Reports":
             trans = c2.fetchall()
             conn2.close()
             return trans
-        transactions = get_transactions()
-        if transactions:
-            df_trans = pd.DataFrame(transactions, columns=["Trans ID", "User", "Item", "Barcode", "Quantity Taken", "Timestamp"])
+        trans = get_transactions()
+        if trans:
+            df_trans = pd.DataFrame(trans, columns=["Trans ID", "User", "Item", "Barcode", "Quantity Taken", "Timestamp"])
             st.table(df_trans)
         else:
             st.write("No transactions recorded yet.")
@@ -652,7 +649,7 @@ elif nav == "Reports":
         st.error("Access denied. Admins only.")
 
 # --------------------------------------------------------------------
-# ACCOUNT SETTINGS
+# ACCOUNT SETTINGS (Change Username & PIN)
 # --------------------------------------------------------------------
 elif nav == "Account Settings":
     st.markdown("<div class='header'>⚙️ Account Settings</div>", unsafe_allow_html=True)
