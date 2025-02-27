@@ -1,45 +1,40 @@
-import os
 import streamlit as st
+# Must call set_page_config() as the very first Streamlit command.
+st.set_page_config(page_title="Professional Inventory Management", layout="wide")
 
-# Set PYZBAR_LIBRARY for Windows (update the path if necessary)
-if os.name == 'nt':
-    os.environ["PYZBAR_LIBRARY"] = r"C:\Program Files (x86)\ZBar\bin\libzbar-64.dll"
-
-try:
-    from pyzbar.pyzbar import decode
-    barcode_scanner_enabled = True
-except Exception as e:
-    barcode_scanner_enabled = False
-
+import os
+from datetime import datetime
 import sqlite3
 import hashlib
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from PIL import Image
-from datetime import datetime
 
-# MUST call set_page_config as the very first Streamlit command.
-st.set_page_config(page_title="Professional Inventory Management", layout="wide")
+# Barcode functionality removed in this version.
+barcode_scanner_enabled = False
+
+# -----------------------------
+# Display Official Logo in Sidebar
+# -----------------------------
+logo_url = "https://i.imgur.com/e6E6TJt.jpeg"
+st.sidebar.image(logo_url, width=150)
 
 # --------------------------------------------------------------------
-# Custom CSS for a Vibrant, Engaging Look
+# Custom CSS for a Vibrant, Official Look with Emojis
 # --------------------------------------------------------------------
 st.markdown(
     """
     <style>
-        body { background-color: #f0f8ff; }
-        .header { font-size: 36px; color: #4B0082; font-weight: bold; margin-bottom: 20px; }
-        .subheader { font-size: 28px; color: #800080; margin-bottom: 15px; }
-        .big-font { font-size: 20px !important; color: #2F4F4F; }
-        .low-stock { color: #D32F2F; font-weight: bold; }
+    @import url('https://fonts.googleapis.com/css2?family=Pacifico&display=swap');
+    body { background-color: #f0f8ff; }
+    .header { font-family: 'Pacifico', cursive; font-size: 42px; color: #4B0082; font-weight: bold; margin-bottom: 20px; }
+    .subheader { font-family: 'Pacifico', cursive; font-size: 32px; color: #800080; margin-bottom: 15px; }
+    .big-font { font-size: 24px !important; color: #2F4F4F; }
+    .low-stock { color: #D32F2F; font-weight: bold; font-size: 20px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-if not barcode_scanner_enabled:
-    st.warning("Barcode scanning is disabled because the ZBar DLL could not be loaded. You can still enter barcodes manually.")
 
 # --------------------------------------------------------------------
 # Helper Function to Hash Text
@@ -53,7 +48,7 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Create Users table (with approved flag)
+# Users table (with approved flag)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -67,7 +62,7 @@ c.execute(
 )
 conn.commit()
 
-# Create login_requests table for staff login requests
+# login_requests table for staff login requests
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS login_requests (
@@ -81,7 +76,7 @@ c.execute(
 )
 conn.commit()
 
-# Create login_log table to record every successful login
+# login_log table to record every successful login
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS login_log (
@@ -95,7 +90,7 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins (approved) and 2 staff (login approval required each time)
+# Insert default users if table is empty: 2 admins (approved) and 2 staff
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -104,7 +99,7 @@ if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 0))
     conn.commit()
 
-# Create Categories table
+# Categories table
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS categories (
@@ -114,14 +109,13 @@ c.execute(
     """
 )
 
-# Create Items table (with threshold for low stock)
+# Items table (barcode removed)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
         name TEXT NOT NULL,
-        barcode TEXT UNIQUE NOT NULL,
         quantity INTEGER NOT NULL,
         threshold INTEGER NOT NULL,
         FOREIGN KEY (category) REFERENCES categories(name)
@@ -129,7 +123,7 @@ c.execute(
     """
 )
 
-# Create Transactions table to log item take events
+# Transactions table to log item take events
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -146,12 +140,11 @@ c.execute(
 conn.commit()
 
 # --------------------------------------------------------------------
-# Additional Helper Functions for Login Requests & Login Log
+# Additional Helper Functions for Login Requests & Logging
 # --------------------------------------------------------------------
 def add_login_request(user_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    # Always add a new login request on each staff login attempt.
     c2.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
     conn2.commit()
     conn2.close()
@@ -159,15 +152,13 @@ def add_login_request(user_id):
 def get_pending_login_requests():
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    c2.execute(
-        """
+    c2.execute("""
         SELECT lr.id, u.name, lr.timestamp 
         FROM login_requests lr 
         JOIN users u ON lr.user_id = u.id 
         WHERE lr.status='pending'
         ORDER BY lr.timestamp ASC
-        """
-    )
+    """)
     reqs = c2.fetchall()
     conn2.close()
     return reqs
@@ -178,8 +169,6 @@ def approve_user_request(user_id, request_id):
     c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (request_id,))
     conn2.commit()
     conn2.close()
-    # Note: We do NOT permanently change the user's 'approved' flag.
-    # Approval is granted only for that login attempt.
 
 def deny_user_request(request_id):
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
@@ -189,14 +178,15 @@ def deny_user_request(request_id):
     conn2.close()
 
 def add_login_log(user_id, username):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
-    c2.execute("INSERT INTO login_log (user_id, username) VALUES (?, ?)", (user_id, username))
+    c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
     conn2.commit()
     conn2.close()
 
 # --------------------------------------------------------------------
-# Other Database Helper Functions (Categories, Items, Users, Transactions)
+# Other Helper Functions (Categories, Items, Users, Transactions)
 # --------------------------------------------------------------------
 def get_db_connection():
     return sqlite3.connect("inventory.db", check_same_thread=False)
@@ -211,16 +201,13 @@ def authenticate(username, pin):
     if row:
         user_id, role = row
         if role == "staff":
-            # For every login attempt, require admin approval.
             add_login_request(user_id)
-            # Check if there's an approved request (i.e. admin just approved)
             conn3 = get_db_connection()
             c3 = conn3.cursor()
             c3.execute("SELECT id FROM login_requests WHERE user_id=? AND status='approved'", (user_id,))
             approved_req = c3.fetchone()
             conn3.close()
             if approved_req:
-                # Consume the approved request and allow login.
                 approved_id = approved_req[0]
                 conn3 = get_db_connection()
                 c3 = conn3.cursor()
@@ -257,17 +244,17 @@ def get_categories():
     conn2.close()
     return cats
 
-def add_item(category, name, barcode, quantity, threshold):
+def add_item(category, name, quantity, threshold):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     try:
-        c2.execute("INSERT INTO items (category, name, barcode, quantity, threshold) VALUES (?, ?, ?, ?, ?)",
-                   (category, name, barcode, quantity, threshold))
+        c2.execute("INSERT INTO items (category, name, quantity, threshold) VALUES (?, ?, ?, ?)",
+                   (category, name, quantity, threshold))
         conn2.commit()
         conn2.close()
         return True
     except sqlite3.IntegrityError:
-        st.error("Item with this barcode already exists.")
+        st.error("Item already exists.")
         conn2.close()
         return False
 
@@ -282,22 +269,22 @@ def get_items():
 def get_items_by_category(category):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("SELECT id, name, barcode, quantity, threshold FROM items WHERE category=?", (category,))
+    c2.execute("SELECT id, name, quantity, threshold FROM items WHERE category=?", (category,))
     items = c2.fetchall()
     conn2.close()
     return items
 
-def update_item_quantity(barcode, quantity):
+def update_item_quantity(item_id, quantity):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("UPDATE items SET quantity=? WHERE barcode=?", (quantity, barcode))
+    c2.execute("UPDATE items SET quantity=? WHERE id=?", (quantity, item_id))
     conn2.commit()
     conn2.close()
 
-def delete_item(barcode):
+def delete_item(item_id):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("DELETE FROM items WHERE barcode=?", (barcode,))
+    c2.execute("DELETE FROM items WHERE id=?", (item_id,))
     conn2.commit()
     conn2.close()
 
@@ -346,9 +333,11 @@ def update_user_credentials(user_id, new_name, new_pin):
     conn2.close()
 
 def add_transaction(user_id, item_id, quantity_taken):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)", (user_id, item_id, quantity_taken))
+    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
+               (user_id, item_id, quantity_taken, ts))
     conn2.commit()
     conn2.close()
 
@@ -356,7 +345,7 @@ def get_transactions():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     c2.execute("""
-        SELECT t.id, u.name, i.name, i.barcode, t.quantity_taken, t.timestamp 
+        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
         FROM transactions t 
         JOIN users u ON t.user_id = u.id 
         JOIN items i ON t.item_id = i.id 
@@ -366,26 +355,62 @@ def get_transactions():
     conn2.close()
     return trans
 
-def generate_pdf():
-    items = get_items()
-    if not items:
-        st.error("No items found to generate report.")
-        return
-    df_items = pd.DataFrame(items, columns=["ID", "Category", "Item Name", "Barcode", "Quantity", "Threshold"])
-    filename = "inventory_report.pdf"
+# --------------------------------------------------------------------
+# NEW: get_last_transaction_for_item function definition
+# --------------------------------------------------------------------
+def get_last_transaction_for_item(item_id):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("""
+        SELECT u.name, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        WHERE t.item_id = ? 
+        ORDER BY t.timestamp DESC 
+        LIMIT 1
+    """, (item_id,))
+    result = c2.fetchone()
+    conn2.close()
+    return result
+
+# --------------------------------------------------------------------
+# Report PDF Generation (Instant, Daily, Weekly, Monthly, Yearly)
+# --------------------------------------------------------------------
+def generate_report_pdf(report_type):
+    txs = get_transactions()
+    filtered = []
+    now = datetime.now()
+    if report_type == "instant":
+        filtered = txs
+    else:
+        for tx in txs:
+            tx_time = datetime.strptime(tx[4], "%Y-%m-%d %H:%M:%S")
+            if report_type == "daily" and tx_time.date() == now.date():
+                filtered.append(tx)
+            elif report_type == "weekly" and (now - tx_time).days < 7:
+                filtered.append(tx)
+            elif report_type == "monthly" and (now - tx_time).days < 30:
+                filtered.append(tx)
+            elif report_type == "yearly" and (now - tx_time).days < 365:
+                filtered.append(tx)
+    if not filtered:
+        st.error("No transactions found for the selected period.")
+        return None
+    df_tx = pd.DataFrame(filtered, columns=["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"])
+    filename = f"inventory_report_{report_type}_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
     cpdf = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
     cpdf.setFont("Helvetica-Bold", 20)
-    cpdf.drawString(50, height - 50, "Inventory Report")
+    cpdf.drawString(50, height - 50, f"Inventory Report - {report_type.capitalize()} Report 😊")
     cpdf.setFont("Helvetica", 12)
     y = height - 80
-    headers = ["ID", "Category", "Item Name", "Barcode", "Quantity", "Threshold"]
-    x_positions = [50, 100, 200, 350, 500, 570]
+    headers = ["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"]
+    x_positions = [50, 100, 200, 350, 500]
     for i, header in enumerate(headers):
         cpdf.drawString(x_positions[i], y, header)
     y -= 20
     cpdf.setFont("Helvetica", 10)
-    for index, row in df_items.iterrows():
+    for index, row in df_tx.iterrows():
         if y < 50:
             cpdf.showPage()
             y = height - 50
@@ -393,17 +418,26 @@ def generate_pdf():
             cpdf.drawString(x_positions[i], y, str(val))
         y -= 15
     cpdf.save()
+    return filename
 
 # --------------------------------------------------------------------
 # Sidebar: Low Stock Alerts (Real-Time)
 # --------------------------------------------------------------------
 def display_low_stock_alerts():
     items = get_items()
-    low_stock = [item for item in items if item[4] < item[5]]
+    low_stock = []
+    for item in items:
+        try:
+            qty = int(item[3])
+            thresh = int(item[4])
+        except ValueError:
+            continue
+        if qty < thresh:
+            low_stock.append((item[2], qty, thresh))
     if low_stock:
-        st.sidebar.markdown("<div class='low-stock'><b>Low Stock Alerts:</b></div>", unsafe_allow_html=True)
-        for item in low_stock:
-            st.sidebar.write(f"{item[2]} (Qty: {item[4]}, Threshold: {item[5]})")
+        st.sidebar.markdown("<div class='low-stock'><b>Low Stock Alerts ⚠️:</b></div>", unsafe_allow_html=True)
+        for name, qty, thresh in low_stock:
+            st.sidebar.write(f"{name} (Qty: {qty}, Threshold: {thresh})")
     else:
         st.sidebar.write("All stock levels are sufficient.")
 
@@ -439,7 +473,6 @@ if not st.session_state.logged_in:
         if role == "pending":
             st.error("Your account is pending admin approval. Please contact an administrator.")
         elif role:
-            # Log successful login event
             user_info = get_user_by_username(username)
             if user_info:
                 add_login_log(user_info[0], username)
@@ -451,14 +484,14 @@ if not st.session_state.logged_in:
             st.error("❌ Invalid username or PIN. Please try again.")
     st.stop()
 
-st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_state.role.capitalize()})")
+st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_state.role.capitalize()} 😊)")
 
 # --------------------------------------------------------------------
 # HOME PAGE
 # --------------------------------------------------------------------
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
-    st.write("Welcome to the Professional Inventory Management System.")
+    st.write("Welcome to the Professional Inventory Management System! 🚀")
 
 # --------------------------------------------------------------------
 # ENTRY LOG (Admin Only)
@@ -490,7 +523,7 @@ elif nav == "Manage Categories":
     new_category = st.text_input("New Category Name", placeholder="Enter category name")
     if st.button("Add Category"):
         if add_category(new_category):
-            st.success(f"Category '{new_category}' added successfully!")
+            st.success(f"Category '{new_category}' added successfully! 🎉")
     st.markdown("<div class='subheader'>Existing Categories:</div>", unsafe_allow_html=True)
     cats = get_categories()
     if cats:
@@ -507,32 +540,14 @@ elif nav == "Add Items":
     if cats:
         category = st.selectbox("Select Category", cats)
         item_name = st.text_input("Item Name", placeholder="Enter item name")
-        barcode = st.text_input("Barcode", placeholder="Scan or enter barcode")
-        if barcode_scanner_enabled:
-            st.markdown("### OR Upload Barcode Image")
-            uploaded_file = st.file_uploader("Upload an image of the barcode", type=["png", "jpg", "jpeg"])
-            if uploaded_file is not None:
-                try:
-                    image = Image.open(uploaded_file)
-                    decoded = decode(image)
-                    if decoded:
-                        decoded_barcode = decoded[0].data.decode("utf-8")
-                        st.success(f"Decoded Barcode: {decoded_barcode}")
-                        barcode = decoded_barcode
-                    else:
-                        st.error("No barcode detected. Try another image.")
-                except Exception as e:
-                    st.error("Error processing image: " + str(e))
-        else:
-            st.info("Barcode scanner is disabled. Please enter barcode manually.")
         quantity = st.number_input("Quantity", min_value=1, step=1)
         threshold = st.number_input("Low Stock Threshold", min_value=1, step=1)
         if st.button("Add Item"):
-            if item_name and barcode:
-                if add_item(category, item_name, barcode, quantity, threshold):
-                    st.success(f"Item '{item_name}' added to category '{category}'.")
+            if item_name:
+                if add_item(category, item_name, quantity, threshold):
+                    st.success(f"Item '{item_name}' added to category '{category}'! 👍")
             else:
-                st.error("Please provide valid item name and barcode.")
+                st.error("Please provide a valid item name.")
     else:
         st.warning("No categories available. Please add a category first.")
 
@@ -547,32 +562,25 @@ elif nav == "Take Items" and st.session_state.role == "staff":
         def get_items_by_category(category):
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute("SELECT id, name, barcode, quantity, threshold FROM items WHERE category=?", (category,))
+            c2.execute("SELECT id, name, quantity, threshold FROM items WHERE category=?", (category,))
             items = c2.fetchall()
             conn2.close()
             return items
         items_in_cat = get_items_by_category(selected_category)
         if items_in_cat:
-            item_options = {f"{item[1]} (Qty: {item[3]})": item for item in items_in_cat}
+            item_options = {f"{item[1]} (Qty: {item[2]})": item for item in items_in_cat}
             selected_item_str = st.selectbox("Select Item", list(item_options.keys()))
             selected_item = item_options[selected_item_str]
-            st.write(f"Selected: {selected_item[1]}, Current Qty: {selected_item[3]}, Threshold: {selected_item[4]}")
-            take_qty = st.number_input("Quantity to take", min_value=1, max_value=selected_item[3], step=1)
+            st.write(f"Selected: {selected_item[1]} (Current Qty: {selected_item[2]}, Threshold: {selected_item[3]})")
+            take_qty = st.number_input("Quantity to take", min_value=1, max_value=selected_item[2], step=1)
             if st.button("Take Item"):
-                new_qty = selected_item[3] - take_qty
+                new_qty = selected_item[2] - take_qty
                 if new_qty < 0:
                     st.error("Not enough stock available.")
                 else:
-                    update_item_quantity(selected_item[2], new_qty)
+                    update_item_quantity(selected_item[0], new_qty)
                     current_user = get_user_by_username(st.session_state.username)
                     if current_user:
-                        def add_transaction(user_id, item_id, quantity_taken):
-                            conn2 = get_db_connection()
-                            c2 = conn2.cursor()
-                            c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)",
-                                       (user_id, selected_item[0], quantity_taken))
-                            conn2.commit()
-                            conn2.close()
                         add_transaction(current_user[0], selected_item[0], take_qty)
                     st.success(f"Took {take_qty} of {selected_item[1]}. New quantity: {new_qty}.")
         else:
@@ -586,27 +594,40 @@ elif nav == "Take Items" and st.session_state.role == "staff":
 elif nav == "View Inventory":
     st.markdown("<div class='header'>📋 Inventory Items</div>", unsafe_allow_html=True)
     items = get_items()
-    if items:
-        df_items = pd.DataFrame(items, columns=["ID", "Category", "Item Name", "Barcode", "Quantity", "Threshold"])
+    enhanced_items = []
+    # Each item row: (id, category, name, quantity, threshold)
+    for item in items:
+        item_fixed = item[:5]
+        last_txn = get_last_transaction_for_item(item_fixed[0])
+        if last_txn:
+            last_by, last_at = last_txn
+        else:
+            last_by, last_at = "-", "-"
+        enhanced_items.append(item_fixed + (last_by, last_at))
+    if enhanced_items:
+        df_items = pd.DataFrame(
+            enhanced_items,
+            columns=["ID", "Category", "Item Name", "Quantity", "Threshold", "Last Taken By", "Last Taken At"]
+        )
         st.table(df_items)
         st.markdown("<div class='subheader'>Update / Delete Items:</div>", unsafe_allow_html=True)
-        barcode_update = st.text_input("Enter Barcode for Update/Delete", placeholder="Enter barcode")
+        item_id_update = st.text_input("Enter Item ID for Update/Delete", placeholder="Enter item ID")
         new_qty = st.number_input("New Quantity", min_value=0, step=1)
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Update Quantity"):
-                if barcode_update:
-                    update_item_quantity(barcode_update, new_qty)
+                if item_id_update:
+                    update_item_quantity(int(item_id_update), new_qty)
                     st.success("Quantity updated successfully.")
                 else:
-                    st.error("Please enter a barcode.")
+                    st.error("Please enter an item ID.")
         with col2:
             if st.button("Delete Item"):
-                if barcode_update:
-                    delete_item(barcode_update)
+                if item_id_update:
+                    delete_item(int(item_id_update))
                     st.warning("Item deleted.")
                 else:
-                    st.error("Please enter a barcode.")
+                    st.error("Please enter an item ID.")
     else:
         st.write("No items found.")
 
@@ -623,22 +644,20 @@ elif nav == "User Management":
         if st.button("Add User"):
             if new_username and new_user_pin:
                 if add_user(new_username, new_role, new_user_pin):
-                    st.success(f"User '{new_username}' added successfully!")
+                    st.success(f"User '{new_username}' added successfully! 🎉")
             else:
                 st.error("Please enter valid user details.")
         st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
         def get_pending_login_requests():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute(
-                """
+            c2.execute("""
                 SELECT lr.id, u.name, lr.timestamp 
                 FROM login_requests lr 
                 JOIN users u ON lr.user_id = u.id 
                 WHERE lr.status = 'pending'
                 ORDER BY lr.timestamp ASC
-                """
-            )
+            """)
             reqs = c2.fetchall()
             conn2.close()
             return reqs
@@ -656,11 +675,11 @@ elif nav == "User Management":
                         user_info = get_user_by_username(uname)
                         if user_info:
                             approve_user_request(user_info[0], req_id)
-                            st.success(f"Approved {uname}'s request.")
+                            st.success(f"Approved {uname}'s request. ✅")
                             st.rerun()
                     if st.button(f"Deny {uname}'s Request", key=f"deny_{req_id}"):
                         deny_user_request(req_id)
-                        st.warning(f"Denied {uname}'s request.")
+                        st.warning(f"Denied {uname}'s request. ❌")
                         st.rerun()
         else:
             st.write("No pending login requests.")
@@ -672,7 +691,7 @@ elif nav == "User Management":
             for user in users:
                 if st.button(f"Delete User {user[0]}", key=f"user_{user[0]}"):
                     delete_user(user[0])
-                    st.success("User deleted!")
+                    st.success("User deleted. 🗑️")
         else:
             st.write("No users found.")
     else:
@@ -684,33 +703,32 @@ elif nav == "User Management":
 elif nav == "Reports":
     if st.session_state.role == "admin":
         st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
+        report_type = st.radio("Select Report Type", ["Instant", "Daily", "Weekly", "Monthly", "Yearly"])
         if st.button("Generate PDF Report"):
-            generate_pdf()
-            st.success("PDF Report generated: inventory_report.pdf")
-            if os.path.exists("inventory_report.pdf"):
-                with open("inventory_report.pdf", "rb") as f:
-                    st.download_button("Download Report", f, file_name="inventory_report.pdf")
+            filename = generate_report_pdf(report_type.lower())
+            if filename and os.path.exists(filename):
+                st.success(f"PDF Report generated: {filename}")
+                with open(filename, "rb") as f:
+                    st.download_button("Download Report", f, file_name=filename)
             else:
                 st.error("Report generation failed.")
         st.markdown("<div class='subheader'>Transaction Log:</div>", unsafe_allow_html=True)
         def get_transactions():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute(
-                """
-                SELECT t.id, u.name, i.name, i.barcode, t.quantity_taken, t.timestamp 
+            c2.execute("""
+                SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
                 FROM transactions t 
                 JOIN users u ON t.user_id = u.id 
                 JOIN items i ON t.item_id = i.id 
                 ORDER BY t.timestamp DESC
-                """
-            )
+            """)
             trans = c2.fetchall()
             conn2.close()
             return trans
         trans = get_transactions()
         if trans:
-            df_trans = pd.DataFrame(trans, columns=["Trans ID", "User", "Item", "Barcode", "Quantity Taken", "Timestamp"])
+            df_trans = pd.DataFrame(trans, columns=["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"])
             st.table(df_trans)
         else:
             st.write("No transactions recorded yet.")
@@ -737,14 +755,14 @@ elif nav == "Account Settings":
         conn2.close()
     current_user = get_user_by_username(st.session_state.username)
     if current_user:
-        st.markdown("<div class='subheader'>Update Your Credentials:</div>", unsafe_allow_html=True)
+        st.markdown("<div class='subheader'>Update Your Credentials 🔧:</div>", unsafe_allow_html=True)
         new_name = st.text_input("New Username", value=current_user[1])
         new_pin = st.text_input("New PIN", type="password", placeholder="Enter new PIN")
         confirm_pin = st.text_input("Confirm New PIN", type="password", placeholder="Re-enter new PIN")
         if st.button("Update Credentials"):
             if new_pin and new_pin == confirm_pin and new_name.strip() != "":
                 update_user_credentials(current_user[0], new_name, new_pin)
-                st.success("Credentials updated successfully!")
+                st.success("Credentials updated successfully! 🎉")
                 st.session_state.username = new_name
             else:
                 st.error("Please ensure the PINs match and the username is valid.")
