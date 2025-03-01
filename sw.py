@@ -48,7 +48,7 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Users table (with approved flag)
+# Users table (approval removed for staff)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -57,20 +57,6 @@ c.execute(
         role TEXT NOT NULL,
         pin TEXT NOT NULL,
         approved INTEGER NOT NULL DEFAULT 0
-    )
-    """
-)
-conn.commit()
-
-# login_requests table for staff login requests
-c.execute(
-    """
-    CREATE TABLE IF NOT EXISTS login_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        status TEXT NOT NULL DEFAULT 'pending',
-        FOREIGN KEY (user_id) REFERENCES users(id)
     )
     """
 )
@@ -95,8 +81,8 @@ c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin2", "admin", hash_text("admin2pass"), 1))
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 0))
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 0))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 1))
     conn.commit()
 
 # Categories table
@@ -140,43 +126,8 @@ c.execute(
 conn.commit()
 
 # --------------------------------------------------------------------
-# Additional Helper Functions for Login Requests & Logging
+# Additional Helper Functions for Logging
 # --------------------------------------------------------------------
-def add_login_request(user_id):
-    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
-    c2 = conn2.cursor()
-    c2.execute("INSERT INTO login_requests (user_id) VALUES (?)", (user_id,))
-    conn2.commit()
-    conn2.close()
-
-def get_pending_login_requests():
-    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
-    c2 = conn2.cursor()
-    c2.execute("""
-        SELECT lr.id, u.name, lr.timestamp 
-        FROM login_requests lr 
-        JOIN users u ON lr.user_id = u.id 
-        WHERE lr.status='pending'
-        ORDER BY lr.timestamp ASC
-    """)
-    reqs = c2.fetchall()
-    conn2.close()
-    return reqs
-
-def approve_user_request(user_id, request_id):
-    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
-    c2 = conn2.cursor()
-    c2.execute("UPDATE login_requests SET status='approved' WHERE id=?", (request_id,))
-    conn2.commit()
-    conn2.close()
-
-def deny_user_request(request_id):
-    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
-    c2 = conn2.cursor()
-    c2.execute("UPDATE login_requests SET status='denied' WHERE id=?", (request_id,))
-    conn2.commit()
-    conn2.close()
-
 def add_login_log(user_id, username):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
@@ -199,25 +150,8 @@ def authenticate(username, pin):
     row = c2.fetchone()
     conn2.close()
     if row:
-        user_id, role = row
-        if role == "staff":
-            add_login_request(user_id)
-            conn3 = get_db_connection()
-            c3 = conn3.cursor()
-            c3.execute("SELECT id FROM login_requests WHERE user_id=? AND status='approved'", (user_id,))
-            approved_req = c3.fetchone()
-            conn3.close()
-            if approved_req:
-                approved_id = approved_req[0]
-                conn3 = get_db_connection()
-                c3 = conn3.cursor()
-                c3.execute("DELETE FROM login_requests WHERE id=?", (approved_id,))
-                conn3.commit()
-                conn3.close()
-                return role
-            else:
-                return "pending"
-        return role
+        # Immediately return the role; no pending approval for staff
+        return row[1]
     return None
 
 def add_category(name):
@@ -289,11 +223,10 @@ def delete_item(item_id):
     conn2.close()
 
 def add_user(name, role, pin):
-    approved = 1 if role == "admin" else 0
     conn2 = get_db_connection()
     c2 = conn2.cursor()
     try:
-        c2.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", (name, role, hash_text(pin), approved))
+        c2.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", (name, role, hash_text(pin), 1))
         conn2.commit()
         conn2.close()
         return True
@@ -305,7 +238,7 @@ def add_user(name, role, pin):
 def get_users():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role, approved FROM users")
+    c2.execute("SELECT id, name, role FROM users")
     users = c2.fetchall()
     conn2.close()
     return users
@@ -320,7 +253,7 @@ def delete_user(user_id):
 def get_user_by_username(username):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role, approved FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+    c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
     user = c2.fetchone()
     conn2.close()
     return user
@@ -344,31 +277,35 @@ def add_transaction(user_id, item_id, quantity_taken):
 def get_transactions():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("""
+    c2.execute(
+        """
         SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
         FROM transactions t 
         JOIN users u ON t.user_id = u.id 
         JOIN items i ON t.item_id = i.id 
         ORDER BY t.timestamp DESC
-    """)
+        """
+    )
     trans = c2.fetchall()
     conn2.close()
     return trans
 
 # --------------------------------------------------------------------
-# NEW: get_last_transaction_for_item function definition
+# get_last_transaction_for_item function definition
 # --------------------------------------------------------------------
 def get_last_transaction_for_item(item_id):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("""
+    c2.execute(
+        """
         SELECT u.name, t.timestamp 
         FROM transactions t 
         JOIN users u ON t.user_id = u.id 
         WHERE t.item_id = ? 
         ORDER BY t.timestamp DESC 
         LIMIT 1
-    """, (item_id,))
+        """, (item_id,)
+    )
     result = c2.fetchone()
     conn2.close()
     return result
@@ -470,9 +407,7 @@ if not st.session_state.logged_in:
     pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
     if st.button("Login"):
         role = authenticate(username, pin)
-        if role == "pending":
-            st.error("Your account is pending admin approval. Please contact an administrator.")
-        elif role:
+        if role:
             user_info = get_user_by_username(username)
             if user_info:
                 add_login_log(user_info[0], username)
@@ -647,51 +582,15 @@ elif nav == "User Management":
                     st.success(f"User '{new_username}' added successfully! 🎉")
             else:
                 st.error("Please enter valid user details.")
-        st.markdown("<div class='subheader'>Pending Staff Login Requests:</div>", unsafe_allow_html=True)
-        def get_pending_login_requests():
-            conn2 = get_db_connection()
-            c2 = conn2.cursor()
-            c2.execute("""
-                SELECT lr.id, u.name, lr.timestamp 
-                FROM login_requests lr 
-                JOIN users u ON lr.user_id = u.id 
-                WHERE lr.status = 'pending'
-                ORDER BY lr.timestamp ASC
-            """)
-            reqs = c2.fetchall()
-            conn2.close()
-            return reqs
-        pending_requests = get_pending_login_requests()
-        if pending_requests:
-            df_requests = pd.DataFrame(pending_requests, columns=["Request ID", "Username", "Timestamp"])
-            st.table(df_requests)
-            for req in pending_requests:
-                req_id, uname, ts = req
-                colA, colB = st.columns([2, 1])
-                with colA:
-                    st.write(f"Request {req_id}: {uname} at {ts}")
-                with colB:
-                    if st.button(f"Approve {uname}'s Request", key=f"approve_{req_id}"):
-                        user_info = get_user_by_username(uname)
-                        if user_info:
-                            approve_user_request(user_info[0], req_id)
-                            st.success(f"Approved {uname}'s request. ✅")
-                            st.rerun()
-                    if st.button(f"Deny {uname}'s Request", key=f"deny_{req_id}"):
-                        deny_user_request(req_id)
-                        st.warning(f"Denied {uname}'s request. ❌")
-                        st.rerun()
-        else:
-            st.write("No pending login requests.")
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
         users = get_users()
         if users:
-            df_users = pd.DataFrame(users, columns=["User ID", "Username", "Role", "Approved"])
+            df_users = pd.DataFrame(users, columns=["User ID", "Username", "Role"])
             st.table(df_users)
             for user in users:
                 if st.button(f"Delete User {user[0]}", key=f"user_{user[0]}"):
                     delete_user(user[0])
-                    st.success("User deleted. 🗑️")
+                    st.success("User deleted! 🗑️")
         else:
             st.write("No users found.")
     else:
@@ -716,13 +615,15 @@ elif nav == "Reports":
         def get_transactions():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute("""
+            c2.execute(
+                """
                 SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
                 FROM transactions t 
                 JOIN users u ON t.user_id = u.id 
                 JOIN items i ON t.item_id = i.id 
                 ORDER BY t.timestamp DESC
-            """)
+                """
+            )
             trans = c2.fetchall()
             conn2.close()
             return trans
@@ -743,7 +644,7 @@ elif nav == "Account Settings":
     def get_user_by_username(username):
         conn2 = get_db_connection()
         c2 = conn2.cursor()
-        c2.execute("SELECT id, name, role, approved FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+        c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
         user = c2.fetchone()
         conn2.close()
         return user
@@ -768,3 +669,4 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
+
