@@ -48,7 +48,7 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Users table (approval removed for staff)
+# Users table (kept with 'approved' field for legacy purposes, but staff are now auto-approved)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -57,6 +57,20 @@ c.execute(
         role TEXT NOT NULL,
         pin TEXT NOT NULL,
         approved INTEGER NOT NULL DEFAULT 0
+    )
+    """
+)
+conn.commit()
+
+# login_requests table for staff login requests (no longer used)
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS login_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (user_id) REFERENCES users(id)
     )
     """
 )
@@ -76,7 +90,37 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins (approved) and 2 staff
+# New Tables for Additional Details
+# Staff Information Table
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS staff_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_id TEXT,
+        name TEXT,
+        mobile TEXT,
+        email TEXT,
+        additional_details TEXT
+    )
+    """
+)
+conn.commit()
+
+# Vendor Information Table
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS vendor_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vendor_name TEXT,
+        contact TEXT,
+        address TEXT,
+        additional_details TEXT
+    )
+    """
+)
+conn.commit()
+
+# Insert default users if table is empty: 2 admins and 2 staff (set approved to 1 so they log in immediately)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -126,7 +170,7 @@ c.execute(
 conn.commit()
 
 # --------------------------------------------------------------------
-# Additional Helper Functions for Logging
+# Additional Helper Functions for Logging and Additional Tables
 # --------------------------------------------------------------------
 def add_login_log(user_id, username):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -135,6 +179,38 @@ def add_login_log(user_id, username):
     c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
     conn2.commit()
     conn2.close()
+
+def add_staff_info(staff_id, name, mobile, email, additional_details):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("INSERT INTO staff_info (staff_id, name, mobile, email, additional_details) VALUES (?, ?, ?, ?, ?)",
+               (staff_id, name, mobile, email, additional_details))
+    conn2.commit()
+    conn2.close()
+
+def get_staff_info():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("SELECT * FROM staff_info")
+    info = c2.fetchall()
+    conn2.close()
+    return info
+
+def add_vendor_info(vendor_name, contact, address, additional_details):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("INSERT INTO vendor_info (vendor_name, contact, address, additional_details) VALUES (?, ?, ?, ?)",
+               (vendor_name, contact, address, additional_details))
+    conn2.commit()
+    conn2.close()
+
+def get_vendor_info():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("SELECT * FROM vendor_info")
+    info = c2.fetchall()
+    conn2.close()
+    return info
 
 # --------------------------------------------------------------------
 # Other Helper Functions (Categories, Items, Users, Transactions)
@@ -150,7 +226,7 @@ def authenticate(username, pin):
     row = c2.fetchone()
     conn2.close()
     if row:
-        # Immediately return the role; no pending approval for staff
+        # Immediately return the role (staff are logged in without pending approval)
         return row[1]
     return None
 
@@ -383,15 +459,16 @@ display_low_stock_alerts()
 # --------------------------------------------------------------------
 # STREAMLIT UI & ROLE-BASED NAVIGATION
 # --------------------------------------------------------------------
+# Updated sidebar titles for grammatical correctness and inclusion of "About"
 if st.session_state.get("role") == "admin":
     nav = st.sidebar.radio(
         "Navigation",
-        ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Entry Log", "Account Settings"]
+        ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Entry Log", "Account Settings", "About"]
     )
 elif st.session_state.get("role") == "staff":
-    nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings"])
+    nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings", "About"])
 else:
-    nav = st.sidebar.radio("Navigation", ["Home", "View Inventory", "Account Settings"])
+    nav = st.sidebar.radio("Navigation", ["Home", "View Inventory", "Account Settings", "About"])
 
 # --------------------------------------------------------------------
 # LOGIN SECTION
@@ -426,10 +503,10 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 # --------------------------------------------------------------------
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
-    st.write("Welcome to the Professional Inventory Management System! 🚀")
+    st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
 
 # --------------------------------------------------------------------
-# ENTRY LOG (Admin Only)
+# ENTRY LOG (Admin Only) with Save & Reset Option for Monthly Log
 # --------------------------------------------------------------------
 elif nav == "Entry Log":
     if st.session_state.role == "admin":
@@ -447,6 +524,24 @@ elif nav == "Entry Log":
             st.table(df_log)
         else:
             st.write("No login entries recorded yet.")
+        
+        # Save & Reset Monthly Log
+        if st.button("Save & Reset Monthly Log"):
+            current_month = datetime.now().strftime("%Y-%m")
+            df_log = pd.DataFrame(log_entries, columns=["Log ID", "User ID", "Username", "Timestamp"])
+            df_month = df_log[df_log["Timestamp"].str.startswith(current_month)]
+            if not df_month.empty:
+                csv = df_month.to_csv(index=False).encode("utf-8")
+                st.download_button("Download Monthly Log CSV", csv, file_name=f"monthly_log_{current_month}.csv")
+                # Clear logs for current month
+                conn2 = get_db_connection()
+                c2 = conn2.cursor()
+                c2.execute("DELETE FROM login_log WHERE strftime('%Y-%m', timestamp)=?", (current_month,))
+                conn2.commit()
+                conn2.close()
+                st.success("Monthly log saved and reset.")
+            else:
+                st.warning("No log entries for the current month to reset.")
     else:
         st.error("Access denied. Admins only.")
 
@@ -540,10 +635,10 @@ elif nav == "View Inventory":
             last_by, last_at = "-", "-"
         enhanced_items.append(item_fixed + (last_by, last_at))
     if enhanced_items:
-        df_items = pd.DataFrame(
-            enhanced_items,
-            columns=["ID", "Category", "Item Name", "Quantity", "Threshold", "Last Taken By", "Last Taken At"]
-        )
+        # Create a serial number starting from 1 for display purposes.
+        serial_numbers = list(range(1, len(enhanced_items) + 1))
+        df_items = pd.DataFrame(enhanced_items, columns=["ID", "Category", "Item Name", "Quantity", "Threshold", "Last Taken By", "Last Taken At"])
+        df_items.insert(0, "S.No", serial_numbers)
         st.table(df_items)
         st.markdown("<div class='subheader'>Update / Delete Items:</div>", unsafe_allow_html=True)
         item_id_update = st.text_input("Enter Item ID for Update/Delete", placeholder="Enter item ID")
@@ -669,4 +764,41 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
+
+# --------------------------------------------------------------------
+# ABOUT / DETAILS (Staff & Vendor Information)
+# --------------------------------------------------------------------
+elif nav == "About":
+    st.markdown("<div class='header'>ℹ️ About / Details</div>", unsafe_allow_html=True)
+    
+    st.markdown("<div class='subheader'>Staff Information</div>", unsafe_allow_html=True)
+    staff_id = st.text_input("Staff ID", placeholder="Enter your staff ID")
+    staff_name = st.text_input("Name", placeholder="Enter your name")
+    mobile = st.text_input("Mobile Number", placeholder="Enter your mobile number")
+    email = st.text_input("Email", placeholder="Enter your email address")
+    additional_details = st.text_area("Additional Details", placeholder="Enter any additional details")
+    if st.button("Add Staff Info"):
+        add_staff_info(staff_id, staff_name, mobile, email, additional_details)
+        st.success("Staff information added.")
+    staff_info = get_staff_info()
+    if staff_info:
+        df_staff = pd.DataFrame(staff_info, columns=["ID", "Staff ID", "Name", "Mobile", "Email", "Additional Details"])
+        st.table(df_staff)
+    else:
+        st.write("No staff information available.")
+    
+    st.markdown("<div class='subheader'>Vendor Information</div>", unsafe_allow_html=True)
+    vendor_name = st.text_input("Vendor Name", placeholder="Enter vendor name")
+    contact = st.text_input("Contact Number", placeholder="Enter vendor contact number")
+    address = st.text_input("Address", placeholder="Enter vendor address")
+    vendor_additional = st.text_area("Additional Details", placeholder="Enter additional details about the vendor")
+    if st.button("Add Vendor Info"):
+        add_vendor_info(vendor_name, contact, address, vendor_additional)
+        st.success("Vendor information added.")
+    vendor_info = get_vendor_info()
+    if vendor_info:
+        df_vendor = pd.DataFrame(vendor_info, columns=["ID", "Vendor Name", "Contact", "Address", "Additional Details"])
+        st.table(df_vendor)
+    else:
+        st.write("No vendor information available.")
 
