@@ -173,9 +173,12 @@ conn.commit()
 # --------------------------------------------------------------------
 # Additional Helper Functions for Logging and Additional Tables
 # --------------------------------------------------------------------
+def get_db_connection():
+    return sqlite3.connect("inventory.db", check_same_thread=False)
+
 def add_login_log(user_id, username):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
+    conn2 = get_db_connection()
     c2 = conn2.cursor()
     c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
     conn2.commit()
@@ -212,6 +215,48 @@ def get_vendor_info():
     info = c2.fetchall()
     conn2.close()
     return info
+
+def add_transaction(user_id, item_id, quantity_taken):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
+               (user_id, item_id, quantity_taken, ts))
+    conn2.commit()
+    conn2.close()
+
+def get_transactions():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute(
+        """
+        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        JOIN items i ON t.item_id = i.id 
+        ORDER BY t.timestamp DESC
+        """
+    )
+    trans = c2.fetchall()
+    conn2.close()
+    return trans
+
+def get_last_transaction_for_item(item_id):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute(
+        """
+        SELECT u.name, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        WHERE t.item_id = ? 
+        ORDER BY t.timestamp DESC 
+        LIMIT 1
+        """, (item_id,)
+    )
+    result = c2.fetchone()
+    conn2.close()
+    return result
 
 # --------------------------------------------------------------------
 # Generate Entry Log PDF
@@ -284,6 +329,14 @@ def generate_vendor_pdf():
 # --------------------------------------------------------------------
 # Sidebar: Low Stock Alerts (Real-Time)
 # --------------------------------------------------------------------
+def get_items():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("SELECT * FROM items")
+    items = c2.fetchall()
+    conn2.close()
+    return items
+
 def display_low_stock_alerts():
     items = get_items()
     low_stock = []
@@ -307,7 +360,6 @@ display_low_stock_alerts()
 # --------------------------------------------------------------------
 # STREAMLIT UI & ROLE-BASED NAVIGATION
 # --------------------------------------------------------------------
-# Updated sidebar titles for grammatical correctness and inclusion of "About"
 if st.session_state.get("role") == "admin":
     nav = st.sidebar.radio(
         "Navigation",
@@ -331,7 +383,21 @@ if not st.session_state.logged_in:
     username = st.text_input("Username", placeholder="Enter your username")
     pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
     if st.button("Login"):
-        role = authenticate(username, pin)
+        def get_user_by_username(username):
+            conn2 = get_db_connection()
+            c2 = conn2.cursor()
+            c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+            user = c2.fetchone()
+            conn2.close()
+            return user
+        role = None
+        conn2 = get_db_connection()
+        c2 = conn2.cursor()
+        c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hash_text(pin)))
+        row = c2.fetchone()
+        conn2.close()
+        if row:
+            role = row[1]
         if role:
             user_info = get_user_by_username(username)
             if user_info:
@@ -352,7 +418,7 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
     st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
-    # Instead of real-time news, display a daily electrical safety tip
+    # Display a daily electrical safety tip (predefined)
     safety_tips = [
         "Always turn off the power before working on electrical systems.",
         "Use insulated tools when handling live wires.",
@@ -469,6 +535,13 @@ elif nav == "Take Items" and st.session_state.role == "staff":
                     st.error("Not enough stock available.")
                 else:
                     update_item_quantity(selected_item[0], new_qty)
+                    def get_user_by_username(username):
+                        conn2 = get_db_connection()
+                        c2 = conn2.cursor()
+                        c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+                        user = c2.fetchone()
+                        conn2.close()
+                        return user
                     current_user = get_user_by_username(st.session_state.username)
                     if current_user:
                         add_transaction(current_user[0], selected_item[0], take_qty)
@@ -483,10 +556,33 @@ elif nav == "Take Items" and st.session_state.role == "staff":
 # --------------------------------------------------------------------
 elif nav == "View Inventory":
     st.markdown("<div class='header'>📋 Inventory Items</div>", unsafe_allow_html=True)
+    def get_items():
+        conn2 = get_db_connection()
+        c2 = conn2.cursor()
+        c2.execute("SELECT * FROM items")
+        items = c2.fetchall()
+        conn2.close()
+        return items
     items = get_items()
     enhanced_items = []
     for item in items:
         item_fixed = item[:5]
+        def get_last_transaction_for_item(item_id):
+            conn2 = get_db_connection()
+            c2 = conn2.cursor()
+            c2.execute(
+                """
+                SELECT u.name, t.timestamp 
+                FROM transactions t 
+                JOIN users u ON t.user_id = u.id 
+                WHERE t.item_id = ? 
+                ORDER BY t.timestamp DESC 
+                LIMIT 1
+                """, (item_id,)
+            )
+            result = c2.fetchone()
+            conn2.close()
+            return result
         last_txn = get_last_transaction_for_item(item_fixed[0])
         if last_txn:
             last_by, last_at = last_txn
@@ -530,6 +626,13 @@ elif nav == "User Management":
         new_role = st.selectbox("Role", ["admin", "staff"])
         new_user_pin = st.text_input("PIN", type="password", placeholder="Enter PIN for new user")
         if st.button("Add User"):
+            def get_user_by_username(username):
+                conn2 = get_db_connection()
+                c2 = conn2.cursor()
+                c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+                user = c2.fetchone()
+                conn2.close()
+                return user
             if new_username and new_user_pin:
                 if add_user(new_username, new_role, new_user_pin):
                     st.success(f"User '{new_username}' added successfully! 🎉")
