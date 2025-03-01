@@ -9,6 +9,7 @@ import hashlib
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+import requests
 
 # Barcode functionality removed in this version.
 barcode_scanner_enabled = False
@@ -48,7 +49,7 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Users table (kept with 'approved' field for legacy purposes, but staff are now auto-approved)
+# Users table (staff still has an 'approved' field for legacy but auto-approved here)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -62,7 +63,7 @@ c.execute(
 )
 conn.commit()
 
-# login_requests table for staff login requests (no longer used)
+# login_requests table (not used anymore)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS login_requests (
@@ -76,7 +77,7 @@ c.execute(
 )
 conn.commit()
 
-# login_log table to record every successful login
+# login_log table
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS login_log (
@@ -106,7 +107,7 @@ c.execute(
 )
 conn.commit()
 
-# Vendor Information Table
+# Vendor Information Table with extra field "item_vendored"
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS vendor_info (
@@ -114,13 +115,14 @@ c.execute(
         vendor_name TEXT,
         contact TEXT,
         address TEXT,
+        item_vendored TEXT,
         additional_details TEXT
     )
     """
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins and 2 staff (set approved to 1 so they log in immediately)
+# Insert default users if table is empty: 2 admins and 2 staff (auto-approved)
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -196,11 +198,11 @@ def get_staff_info():
     conn2.close()
     return info
 
-def add_vendor_info(vendor_name, contact, address, additional_details):
+def add_vendor_info(vendor_name, contact, address, item_vendored, additional_details):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("INSERT INTO vendor_info (vendor_name, contact, address, additional_details) VALUES (?, ?, ?, ?)",
-               (vendor_name, contact, address, additional_details))
+    c2.execute("INSERT INTO vendor_info (vendor_name, contact, address, item_vendored, additional_details) VALUES (?, ?, ?, ?, ?)",
+               (vendor_name, contact, address, item_vendored, additional_details))
     conn2.commit()
     conn2.close()
 
@@ -213,217 +215,52 @@ def get_vendor_info():
     return info
 
 # --------------------------------------------------------------------
-# Other Helper Functions (Categories, Items, Users, Transactions)
+# Real-Time News Fetching for Electricals
 # --------------------------------------------------------------------
-def get_db_connection():
-    return sqlite3.connect("inventory.db", check_same_thread=False)
-
-def authenticate(username, pin):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    hashed = hash_text(pin)
-    c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hashed))
-    row = c2.fetchone()
-    conn2.close()
-    if row:
-        # Immediately return the role (staff are logged in without pending approval)
-        return row[1]
-    return None
-
-def add_category(name):
-    if not name.strip():
-        st.error("Please enter a valid category name.")
-        return False
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO categories (name) VALUES (?)", (name.strip(),))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("Category already exists.")
-        conn2.close()
-        return False
-
-def get_categories():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT name FROM categories")
-    cats = [row[0] for row in c2.fetchall()]
-    conn2.close()
-    return cats
-
-def add_item(category, name, quantity, threshold):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO items (category, name, quantity, threshold) VALUES (?, ?, ?, ?)",
-                   (category, name, quantity, threshold))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("Item already exists.")
-        conn2.close()
-        return False
-
-def get_items():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT * FROM items")
-    items = c2.fetchall()
-    conn2.close()
-    return items
-
-def get_items_by_category(category):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, quantity, threshold FROM items WHERE category=?", (category,))
-    items = c2.fetchall()
-    conn2.close()
-    return items
-
-def update_item_quantity(item_id, quantity):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("UPDATE items SET quantity=? WHERE id=?", (quantity, item_id))
-    conn2.commit()
-    conn2.close()
-
-def delete_item(item_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("DELETE FROM items WHERE id=?", (item_id,))
-    conn2.commit()
-    conn2.close()
-
-def add_user(name, role, pin):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", (name, role, hash_text(pin), 1))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("User already exists or username is taken.")
-        conn2.close()
-        return False
-
-def get_users():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role FROM users")
-    users = c2.fetchall()
-    conn2.close()
-    return users
-
-def delete_user(user_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("DELETE FROM users WHERE id=?", (user_id,))
-    conn2.commit()
-    conn2.close()
-
-def get_user_by_username(username):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
-    user = c2.fetchone()
-    conn2.close()
-    return user
-
-def update_user_credentials(user_id, new_name, new_pin):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("UPDATE users SET name=?, pin=? WHERE id=?", (new_name, hash_text(new_pin), user_id))
-    conn2.commit()
-    conn2.close()
-
-def add_transaction(user_id, item_id, quantity_taken):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
-               (user_id, item_id, quantity_taken, ts))
-    conn2.commit()
-    conn2.close()
-
-def get_transactions():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC
-        """
-    )
-    trans = c2.fetchall()
-    conn2.close()
-    return trans
-
-# --------------------------------------------------------------------
-# get_last_transaction_for_item function definition
-# --------------------------------------------------------------------
-def get_last_transaction_for_item(item_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT u.name, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        WHERE t.item_id = ? 
-        ORDER BY t.timestamp DESC 
-        LIMIT 1
-        """, (item_id,)
-    )
-    result = c2.fetchone()
-    conn2.close()
-    return result
-
-# --------------------------------------------------------------------
-# Report PDF Generation (Instant, Daily, Weekly, Monthly, Yearly)
-# --------------------------------------------------------------------
-def generate_report_pdf(report_type):
-    txs = get_transactions()
-    filtered = []
-    now = datetime.now()
-    if report_type == "instant":
-        filtered = txs
+def fetch_electrical_news():
+    # Use your News API key here. It is recommended to store it in Streamlit secrets.
+    api_key = st.secrets["news_api_key"] if "news_api_key" in st.secrets else "YOUR_API_KEY"
+    url = "https://newsapi.org/v2/top-headlines"
+    params = {
+        "q": "electrical goods OR electrical inventory OR electrical appliances",
+        "apiKey": api_key,
+        "pageSize": 5,
+        "language": "en"
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        return data.get("articles", [])
     else:
-        for tx in txs:
-            tx_time = datetime.strptime(tx[4], "%Y-%m-%d %H:%M:%S")
-            if report_type == "daily" and tx_time.date() == now.date():
-                filtered.append(tx)
-            elif report_type == "weekly" and (now - tx_time).days < 7:
-                filtered.append(tx)
-            elif report_type == "monthly" and (now - tx_time).days < 30:
-                filtered.append(tx)
-            elif report_type == "yearly" and (now - tx_time).days < 365:
-                filtered.append(tx)
-    if not filtered:
-        st.error("No transactions found for the selected period.")
+        return []
+
+# --------------------------------------------------------------------
+# New: Generate Entry Log PDF
+# --------------------------------------------------------------------
+def generate_entry_log_pdf():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("SELECT id, user_id, username, timestamp FROM login_log ORDER BY timestamp DESC")
+    logs = c2.fetchall()
+    conn2.close()
+    if not logs:
+        st.error("No login entries found.")
         return None
-    df_tx = pd.DataFrame(filtered, columns=["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"])
-    filename = f"inventory_report_{report_type}_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
+    df_log = pd.DataFrame(logs, columns=["Log ID", "User ID", "Username", "Timestamp"])
+    filename = f"entry_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     cpdf = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
     cpdf.setFont("Helvetica-Bold", 20)
-    cpdf.drawString(50, height - 50, f"Inventory Report - {report_type.capitalize()} Report 😊")
+    cpdf.drawString(50, height - 50, "Entry Log Report")
     cpdf.setFont("Helvetica", 12)
     y = height - 80
-    headers = ["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"]
-    x_positions = [50, 100, 200, 350, 500]
+    headers = ["Log ID", "User ID", "Username", "Timestamp"]
+    x_positions = [50, 150, 250, 450]
     for i, header in enumerate(headers):
         cpdf.drawString(x_positions[i], y, header)
     y -= 20
     cpdf.setFont("Helvetica", 10)
-    for index, row in df_tx.iterrows():
+    for index, row in df_log.iterrows():
         if y < 50:
             cpdf.showPage()
             y = height - 50
@@ -504,9 +341,19 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
     st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
+    # Display Real-Time Electrical News
+    st.markdown("<div class='subheader'>🔌 Real-Time Electrical News</div>", unsafe_allow_html=True)
+    articles = fetch_electrical_news()
+    if articles:
+        for article in articles:
+            st.markdown(f"**[{article['title']}]({article['url']})**")
+            st.write(article.get('description', 'No description available.'))
+            st.write("---")
+    else:
+        st.write("No news available at the moment.")
 
 # --------------------------------------------------------------------
-# ENTRY LOG (Admin Only) with Save & Reset Option for Monthly Log
+# ENTRY LOG (Admin Only) with Save & Reset Option for Monthly Log in PDF Format
 # --------------------------------------------------------------------
 elif nav == "Entry Log":
     if st.session_state.role == "admin":
@@ -525,21 +372,25 @@ elif nav == "Entry Log":
         else:
             st.write("No login entries recorded yet.")
         
-        # Save & Reset Monthly Log
-        if st.button("Save & Reset Monthly Log"):
+        # Save & Reset Monthly Log (PDF Export)
+        if st.button("Save & Reset Monthly Log (PDF)"):
             current_month = datetime.now().strftime("%Y-%m")
             df_log = pd.DataFrame(log_entries, columns=["Log ID", "User ID", "Username", "Timestamp"])
             df_month = df_log[df_log["Timestamp"].str.startswith(current_month)]
             if not df_month.empty:
-                csv = df_month.to_csv(index=False).encode("utf-8")
-                st.download_button("Download Monthly Log CSV", csv, file_name=f"monthly_log_{current_month}.csv")
-                # Clear logs for current month
-                conn2 = get_db_connection()
-                c2 = conn2.cursor()
-                c2.execute("DELETE FROM login_log WHERE strftime('%Y-%m', timestamp)=?", (current_month,))
-                conn2.commit()
-                conn2.close()
-                st.success("Monthly log saved and reset.")
+                # Generate PDF for the monthly log
+                filename = generate_entry_log_pdf()
+                if filename and os.path.exists(filename):
+                    st.download_button("Download Monthly Log PDF", open(filename, "rb"), file_name=f"monthly_log_{current_month}.pdf")
+                    # Clear logs for current month
+                    conn2 = get_db_connection()
+                    c2 = conn2.cursor()
+                    c2.execute("DELETE FROM login_log WHERE strftime('%Y-%m', timestamp)=?", (current_month,))
+                    conn2.commit()
+                    conn2.close()
+                    st.success("Monthly log saved and reset.")
+                else:
+                    st.error("Failed to generate PDF.")
             else:
                 st.warning("No log entries for the current month to reset.")
     else:
@@ -791,13 +642,14 @@ elif nav == "About":
     vendor_name = st.text_input("Vendor Name", placeholder="Enter vendor name")
     contact = st.text_input("Contact Number", placeholder="Enter vendor contact number")
     address = st.text_input("Address", placeholder="Enter vendor address")
+    item_vendored = st.text_input("Item Vendored", placeholder="Enter the item for which the vendor supplies")
     vendor_additional = st.text_area("Additional Details", placeholder="Enter additional details about the vendor")
     if st.button("Add Vendor Info"):
-        add_vendor_info(vendor_name, contact, address, vendor_additional)
+        add_vendor_info(vendor_name, contact, address, item_vendored, vendor_additional)
         st.success("Vendor information added.")
     vendor_info = get_vendor_info()
     if vendor_info:
-        df_vendor = pd.DataFrame(vendor_info, columns=["ID", "Vendor Name", "Contact", "Address", "Additional Details"])
+        df_vendor = pd.DataFrame(vendor_info, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
         st.table(df_vendor)
     else:
         st.write("No vendor information available.")
