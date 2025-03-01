@@ -9,7 +9,7 @@ import hashlib
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import requests
+import random
 
 # Barcode functionality removed in this version.
 barcode_scanner_enabled = False
@@ -49,7 +49,7 @@ def hash_text(text):
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 c = conn.cursor()
 
-# Users table (staff still has an 'approved' field for legacy but auto-approved here)
+# Users table (includes approved field for legacy; all users are auto-approved)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -57,7 +57,7 @@ c.execute(
         name TEXT NOT NULL UNIQUE,
         role TEXT NOT NULL,
         pin TEXT NOT NULL,
-        approved INTEGER NOT NULL DEFAULT 0
+        approved INTEGER NOT NULL DEFAULT 1
     )
     """
 )
@@ -77,7 +77,7 @@ c.execute(
 )
 conn.commit()
 
-# login_log table
+# login_log table to record every successful login
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS login_log (
@@ -91,7 +91,6 @@ c.execute(
 )
 conn.commit()
 
-# New Tables for Additional Details
 # Staff Information Table
 c.execute(
     """
@@ -107,7 +106,7 @@ c.execute(
 )
 conn.commit()
 
-# Vendor Information Table with extra field "item_vendored"
+# Vendor Information Table (with extra field for the item they supply)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS vendor_info (
@@ -122,7 +121,7 @@ c.execute(
 )
 conn.commit()
 
-# Insert default users if table is empty: 2 admins and 2 staff (auto-approved)
+# Insert default users if table is empty: 2 admins and 2 staff
 c.execute("SELECT COUNT(*) FROM users")
 if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
@@ -215,27 +214,7 @@ def get_vendor_info():
     return info
 
 # --------------------------------------------------------------------
-# Real-Time News Fetching for Electricals
-# --------------------------------------------------------------------
-def fetch_electrical_news():
-    # Use your News API key here. It is recommended to store it in Streamlit secrets.
-    api_key = st.secrets["news_api_key"] if "news_api_key" in st.secrets else "YOUR_API_KEY"
-    url = "https://newsapi.org/v2/top-headlines"
-    params = {
-        "q": "electrical goods OR electrical inventory OR electrical appliances",
-        "apiKey": api_key,
-        "pageSize": 5,
-        "language": "en"
-    }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        return data.get("articles", [])
-    else:
-        return []
-
-# --------------------------------------------------------------------
-# New: Generate Entry Log PDF
+# Generate Entry Log PDF
 # --------------------------------------------------------------------
 def generate_entry_log_pdf():
     conn2 = get_db_connection()
@@ -261,6 +240,38 @@ def generate_entry_log_pdf():
     y -= 20
     cpdf.setFont("Helvetica", 10)
     for index, row in df_log.iterrows():
+        if y < 50:
+            cpdf.showPage()
+            y = height - 50
+        for i, val in enumerate(row):
+            cpdf.drawString(x_positions[i], y, str(val))
+        y -= 15
+    cpdf.save()
+    return filename
+
+# --------------------------------------------------------------------
+# Generate Vendor Details PDF
+# --------------------------------------------------------------------
+def generate_vendor_pdf():
+    vendors = get_vendor_info()
+    if not vendors:
+        st.error("No vendor information found.")
+        return None
+    df_vendor = pd.DataFrame(vendors, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
+    filename = f"vendor_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    cpdf = canvas.Canvas(filename, pagesize=letter)
+    width, height = letter
+    cpdf.setFont("Helvetica-Bold", 20)
+    cpdf.drawString(50, height - 50, "Vendor Details Report")
+    cpdf.setFont("Helvetica", 12)
+    y = height - 80
+    headers = ["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"]
+    x_positions = [50, 100, 250, 350, 500, 650]
+    for i, header in enumerate(headers):
+        cpdf.drawString(x_positions[i], y, header)
+    y -= 20
+    cpdf.setFont("Helvetica", 10)
+    for index, row in df_vendor.iterrows():
         if y < 50:
             cpdf.showPage()
             y = height - 50
@@ -341,16 +352,16 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
     st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
-    # Display Real-Time Electrical News
-    st.markdown("<div class='subheader'>🔌 Real-Time Electrical News</div>", unsafe_allow_html=True)
-    articles = fetch_electrical_news()
-    if articles:
-        for article in articles:
-            st.markdown(f"**[{article['title']}]({article['url']})**")
-            st.write(article.get('description', 'No description available.'))
-            st.write("---")
-    else:
-        st.write("No news available at the moment.")
+    # Instead of real-time news, display a daily electrical safety tip
+    safety_tips = [
+        "Always turn off the power before working on electrical systems.",
+        "Use insulated tools when handling live wires.",
+        "Keep a fire extinguisher near electrical installations.",
+        "Regularly inspect cords and plugs for wear and tear.",
+        "Ensure proper grounding to prevent electric shocks."
+    ]
+    tip = safety_tips[datetime.now().day % len(safety_tips)]
+    st.markdown(f"<div class='subheader'>🔒 Daily Safety Tip:</div> <p class='big-font'>{tip}</p>", unsafe_allow_html=True)
 
 # --------------------------------------------------------------------
 # ENTRY LOG (Admin Only) with Save & Reset Option for Monthly Log in PDF Format
@@ -378,11 +389,9 @@ elif nav == "Entry Log":
             df_log = pd.DataFrame(log_entries, columns=["Log ID", "User ID", "Username", "Timestamp"])
             df_month = df_log[df_log["Timestamp"].str.startswith(current_month)]
             if not df_month.empty:
-                # Generate PDF for the monthly log
                 filename = generate_entry_log_pdf()
                 if filename and os.path.exists(filename):
                     st.download_button("Download Monthly Log PDF", open(filename, "rb"), file_name=f"monthly_log_{current_month}.pdf")
-                    # Clear logs for current month
                     conn2 = get_db_connection()
                     c2 = conn2.cursor()
                     c2.execute("DELETE FROM login_log WHERE strftime('%Y-%m', timestamp)=?", (current_month,))
@@ -476,7 +485,6 @@ elif nav == "View Inventory":
     st.markdown("<div class='header'>📋 Inventory Items</div>", unsafe_allow_html=True)
     items = get_items()
     enhanced_items = []
-    # Each item row: (id, category, name, quantity, threshold)
     for item in items:
         item_fixed = item[:5]
         last_txn = get_last_transaction_for_item(item_fixed[0])
@@ -486,7 +494,6 @@ elif nav == "View Inventory":
             last_by, last_at = "-", "-"
         enhanced_items.append(item_fixed + (last_by, last_at))
     if enhanced_items:
-        # Create a serial number starting from 1 for display purposes.
         serial_numbers = list(range(1, len(enhanced_items) + 1))
         df_items = pd.DataFrame(enhanced_items, columns=["ID", "Category", "Item Name", "Quantity", "Threshold", "Last Taken By", "Last Taken At"])
         df_items.insert(0, "S.No", serial_numbers)
@@ -651,6 +658,12 @@ elif nav == "About":
     if vendor_info:
         df_vendor = pd.DataFrame(vendor_info, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
         st.table(df_vendor)
+        if st.button("Save Vendor Details as PDF"):
+            filename = generate_vendor_pdf()
+            if filename and os.path.exists(filename):
+                st.download_button("Download Vendor Details PDF", open(filename, "rb"), file_name=filename)
+            else:
+                st.error("Failed to generate Vendor PDF.")
     else:
         st.write("No vendor information available.")
 
