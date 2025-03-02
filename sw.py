@@ -130,7 +130,7 @@ c.execute(
     """
 )
 
-# Vendors table
+# Vendors table (initial schema)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS vendors (
@@ -155,7 +155,9 @@ def update_vendor_schema():
     columns = [row[1] for row in c2.fetchall()]
     if "quantity_bought" not in columns:
         c2.execute("ALTER TABLE vendors ADD COLUMN quantity_bought INTEGER")
-        conn2.commit()
+    if "points" not in columns:
+        c2.execute("ALTER TABLE vendors ADD COLUMN points TEXT")
+    conn2.commit()
     conn2.close()
 
 update_vendor_schema()
@@ -863,6 +865,7 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
+
 
 
 
