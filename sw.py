@@ -44,6 +44,12 @@ def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 # --------------------------------------------------------------------
+# Database Connection Helper
+# --------------------------------------------------------------------
+def get_db_connection():
+    return sqlite3.connect("inventory.db", check_same_thread=False)
+
+# --------------------------------------------------------------------
 # DATABASE SETUP
 # --------------------------------------------------------------------
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
@@ -139,7 +145,9 @@ c.execute(
 )
 conn.commit()
 
-# Function to update vendor schema if necessary
+# --------------------------------------------------------------------
+# Schema Update for Vendors Table
+# --------------------------------------------------------------------
 def update_vendor_schema():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
@@ -166,9 +174,6 @@ def add_login_log(user_id, username):
 # --------------------------------------------------------------------
 # Other Helper Functions (Categories, Items, Users, Transactions, Vendors)
 # --------------------------------------------------------------------
-def get_db_connection():
-    return sqlite3.connect("inventory.db", check_same_thread=False)
-
 def authenticate(username, pin):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
@@ -858,6 +863,7 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
+
 
 
 
