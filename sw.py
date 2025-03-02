@@ -124,7 +124,7 @@ c.execute(
     """
 )
 
-# New Vendors table
+# Vendors table
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS vendors (
@@ -381,6 +381,10 @@ def add_vendor(vendor_name, contact, item_supplied, address, quantity_bought, po
         conn2.commit()
         conn2.close()
         return True
+    except sqlite3.OperationalError as e:
+        st.error(f"Operational error: {e}")
+        conn2.close()
+        return False
     except sqlite3.IntegrityError:
         st.error("Vendor may already exist.")
         conn2.close()
@@ -401,46 +405,67 @@ def delete_vendor(vendor_id):
     conn2.commit()
     conn2.close()
 
-# --------------------------------------------------------------------
-# Save and Reset Entry Log (Admin Only)
-# --------------------------------------------------------------------
-def save_and_reset_log():
-    # Get all login log entries
+# ---------------- Data Recovery & Reset Function ----------------
+def backup_and_reset_data():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("SELECT * FROM login_log ORDER BY timestamp DESC")
-    logs = c2.fetchall()
+    # Gather data from tables (excluding users)
+    c2.execute("SELECT * FROM categories")
+    categories = c2.fetchall()
+    c2.execute("SELECT * FROM items")
+    items = c2.fetchall()
+    c2.execute("SELECT * FROM transactions")
+    transactions = c2.fetchall()
+    c2.execute("SELECT * FROM vendors")
+    vendors = c2.fetchall()
+    c2.execute("SELECT * FROM login_log")
+    login_logs = c2.fetchall()
     conn2.close()
-    if not logs:
-        st.error("No log entries to save.")
-        return None
-    filename = f"entry_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    
+    filename = f"data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     pdf = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
-    pdf.setFont("Helvetica-Bold", 20)
-    pdf.drawString(50, height - 50, "Entry Log Report")
-    pdf.setFont("Helvetica", 12)
-    y = height - 80
-    headers = ["Log ID", "User ID", "Username", "Timestamp"]
-    x_positions = [50, 100, 200, 350]
-    for i, header in enumerate(headers):
-        pdf.drawString(x_positions[i], y, header)
-    y -= 20
-    pdf.setFont("Helvetica", 10)
-    for log in logs:
-        if y < 50:
-            pdf.showPage()
-            y = height - 50
-        for i, val in enumerate(log):
-            pdf.drawString(x_positions[i], y, str(val))
-        y -= 15
+    y = height - 40
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(50, y, "Complete Data Backup Report")
+    y -= 30
+    sections = [
+        ("Categories", categories),
+        ("Items", items),
+        ("Transactions", transactions),
+        ("Vendors", vendors),
+        ("Login Logs", login_logs)
+    ]
+    for section_title, data in sections:
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(50, y, f"{section_title}:")
+        y -= 20
+        pdf.setFont("Helvetica", 10)
+        if data:
+            for row in data:
+                line = ", ".join(str(x) for x in row)
+                pdf.drawString(50, y, line)
+                y -= 15
+                if y < 50:
+                    pdf.showPage()
+                    y = height - 40
+        else:
+            pdf.drawString(50, y, "No records.")
+            y -= 15
+        y -= 10
     pdf.save()
-    # Reset the log table by deleting all entries
+    
+    # Reset data: delete all records from categories, items, transactions, vendors, login_log
     conn2 = get_db_connection()
     c2 = conn2.cursor()
+    c2.execute("DELETE FROM categories")
+    c2.execute("DELETE FROM items")
+    c2.execute("DELETE FROM transactions")
+    c2.execute("DELETE FROM vendors")
     c2.execute("DELETE FROM login_log")
     conn2.commit()
     conn2.close()
+    
     return filename
 
 # --------------------------------------------------------------------
@@ -472,7 +497,8 @@ display_low_stock_alerts()
 # --------------------------------------------------------------------
 if st.sidebar.button("Logout"):
     st.session_state.clear()
-    st.experimental_rerun()
+    # Instead of experimental_rerun(), simply stop the app (it will refresh on next run)
+    st.stop()
 
 # --------------------------------------------------------------------
 # STREAMLIT UI & ROLE-BASED NAVIGATION
@@ -480,7 +506,7 @@ if st.sidebar.button("Logout"):
 if st.session_state.get("role") == "admin":
     nav = st.sidebar.radio(
         "Navigation",
-        ["Home", "Manage Categories", "Add Items", "View Inventory", "Vendor Management", "User Management", "Reports", "Entry Log", "Account Settings"]
+        ["Home", "Manage Categories", "Add Items", "View Inventory", "Vendor Management", "User Management", "Reports", "Entry Log", "Data Recovery & Reset", "Account Settings"]
     )
 elif st.session_state.get("role") == "staff":
     nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings"])
@@ -541,13 +567,31 @@ elif nav == "Entry Log":
         else:
             st.write("No login entries recorded yet.")
         if st.button("Save and Reset Log"):
-            pdf_filename = save_and_reset_log()
+            pdf_filename = backup_and_reset_data()
             if pdf_filename and os.path.exists(pdf_filename):
-                st.success(f"Log saved as {pdf_filename} and reset successfully.")
+                st.success(f"Log saved as {pdf_filename} and system reset successfully.")
                 with open(pdf_filename, "rb") as f:
-                    st.download_button("Download Log PDF", f, file_name=pdf_filename)
+                    st.download_button("Download Log Backup PDF", f, file_name=pdf_filename)
             else:
                 st.error("Failed to save and reset log.")
+    else:
+        st.error("Access denied. Admins only.")
+
+# --------------------------------------------------------------------
+# DATA RECOVERY & RESET (Admin Only)
+# --------------------------------------------------------------------
+elif nav == "Data Recovery & Reset":
+    if st.session_state.role == "admin":
+        st.markdown("<div class='header'>🔄 Data Recovery & Reset</div>", unsafe_allow_html=True)
+        st.write("This will backup all system data (except users) to a PDF and then reset the system.")
+        if st.button("Backup Data & Reset System"):
+            backup_filename = backup_and_reset_data()
+            if backup_filename and os.path.exists(backup_filename):
+                st.success(f"Data backed up as {backup_filename} and system reset successfully.")
+                with open(backup_filename, "rb") as f:
+                    st.download_button("Download Backup PDF", f, file_name=backup_filename)
+            else:
+                st.error("Data backup and reset failed.")
     else:
         st.error("Access denied. Admins only.")
 
