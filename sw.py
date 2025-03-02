@@ -325,7 +325,9 @@ def generate_report_pdf(report_type):
     if not filtered:
         st.error("No transactions found for the selected period.")
         return None
+    # Create DataFrame and add serial numbering starting from 1
     df_tx = pd.DataFrame(filtered, columns=["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"])
+    df_tx.insert(0, "S.No", range(1, len(df_tx) + 1))
     filename = f"inventory_report_{report_type}_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
     cpdf = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
@@ -333,8 +335,8 @@ def generate_report_pdf(report_type):
     cpdf.drawString(50, height - 50, f"Inventory Report - {report_type.capitalize()} Report 😊")
     cpdf.setFont("Helvetica", 12)
     y = height - 80
-    headers = ["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"]
-    x_positions = [50, 100, 200, 350, 500]
+    headers = ["S.No", "Trans ID", "User", "Item", "Quantity Taken", "Timestamp"]
+    x_positions = [30, 80, 140, 240, 350, 500]
     for i, header in enumerate(headers):
         cpdf.drawString(x_positions[i], y, header)
     y -= 20
@@ -404,7 +406,6 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.username = username
-            # Removed st.experimental_rerun() to avoid error
         else:
             st.error("❌ Invalid username or PIN. Please try again.")
     st.stop()
@@ -659,4 +660,5 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
+
 
