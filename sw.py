@@ -9,7 +9,6 @@ import hashlib
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import random
 
 # Barcode functionality removed in this version.
 barcode_scanner_enabled = False
@@ -21,7 +20,7 @@ logo_url = "https://i.imgur.com/e6E6TJt.jpeg"
 st.sidebar.image(logo_url, width=150)
 
 # --------------------------------------------------------------------
-# Custom CSS for a Vibrant, Official Look with Emojis
+# Custom CSS for a Professional Look with Vibrant Fonts
 # --------------------------------------------------------------------
 st.markdown(
     """
@@ -97,45 +96,6 @@ c.execute(
 )
 conn.commit()
 
-# Staff Information Table
-c.execute(
-    """
-    CREATE TABLE IF NOT EXISTS staff_info (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        staff_id TEXT,
-        name TEXT,
-        mobile TEXT,
-        email TEXT,
-        additional_details TEXT
-    )
-    """
-)
-conn.commit()
-
-# Vendor Information Table (with extra field for the item they supply)
-c.execute(
-    """
-    CREATE TABLE IF NOT EXISTS vendor_info (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        vendor_name TEXT,
-        contact TEXT,
-        address TEXT,
-        item_vendored TEXT,
-        additional_details TEXT
-    )
-    """
-)
-conn.commit()
-
-# Insert default users if table is empty: 2 admins and 2 staff
-c.execute("SELECT COUNT(*) FROM users")
-if c.fetchone()[0] == 0:
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin2", "admin", hash_text("admin2pass"), 1))
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 1))
-    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 1))
-    conn.commit()
-
 # Categories table
 c.execute(
     """
@@ -177,7 +137,7 @@ c.execute(
 conn.commit()
 
 # --------------------------------------------------------------------
-# Helper Functions for Logging and Additional Tables
+# Additional Helper Functions
 # --------------------------------------------------------------------
 def add_login_log(user_id, username):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -186,38 +146,6 @@ def add_login_log(user_id, username):
     c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
     conn2.commit()
     conn2.close()
-
-def add_staff_info(staff_id, name, mobile, email, additional_details):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("INSERT INTO staff_info (staff_id, name, mobile, email, additional_details) VALUES (?, ?, ?, ?, ?)",
-               (staff_id, name, mobile, email, additional_details))
-    conn2.commit()
-    conn2.close()
-
-def get_staff_info():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT * FROM staff_info")
-    info = c2.fetchall()
-    conn2.close()
-    return info
-
-def add_vendor_info(vendor_name, contact, address, item_vendored, additional_details):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("INSERT INTO vendor_info (vendor_name, contact, address, item_vendored, additional_details) VALUES (?, ?, ?, ?, ?)",
-               (vendor_name, contact, address, item_vendored, additional_details))
-    conn2.commit()
-    conn2.close()
-
-def get_vendor_info():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT * FROM vendor_info")
-    info = c2.fetchall()
-    conn2.close()
-    return info
 
 def add_transaction(user_id, item_id, quantity_taken):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -298,39 +226,7 @@ def generate_entry_log_pdf():
     return filename
 
 # --------------------------------------------------------------------
-# Generate Vendor Details PDF
-# --------------------------------------------------------------------
-def generate_vendor_pdf():
-    vendors = get_vendor_info()
-    if not vendors:
-        st.error("No vendor information found.")
-        return None
-    df_vendor = pd.DataFrame(vendors, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
-    filename = f"vendor_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    cpdf = canvas.Canvas(filename, pagesize=letter)
-    width, height = letter
-    cpdf.setFont("Helvetica-Bold", 20)
-    cpdf.drawString(50, height - 50, "Vendor Details Report")
-    cpdf.setFont("Helvetica", 12)
-    y = height - 80
-    headers = ["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"]
-    x_positions = [50, 100, 250, 350, 500, 650]
-    for i, header in enumerate(headers):
-        cpdf.drawString(x_positions[i], y, header)
-    y -= 20
-    cpdf.setFont("Helvetica", 10)
-    for index, row in df_vendor.iterrows():
-        if y < 50:
-            cpdf.showPage()
-            y = height - 50
-        for i, val in enumerate(row):
-            cpdf.drawString(x_positions[i], y, str(val))
-        y -= 15
-    cpdf.save()
-    return filename
-
-# --------------------------------------------------------------------
-# Helper Function: get_items (global)
+# Global Helper: get_items
 # --------------------------------------------------------------------
 def get_items():
     conn2 = get_db_connection()
@@ -341,7 +237,7 @@ def get_items():
     return items
 
 # --------------------------------------------------------------------
-# Sidebar: Low Stock Alerts (Real-Time)
+# Sidebar: Low Stock Alerts
 # --------------------------------------------------------------------
 def display_low_stock_alerts():
     items = get_items()
@@ -364,7 +260,7 @@ def display_low_stock_alerts():
 display_low_stock_alerts()
 
 # --------------------------------------------------------------------
-# STREAMLIT UI & ROLE-BASED NAVIGATION
+# STREAMLIT UI & NAVIGATION
 # --------------------------------------------------------------------
 if st.session_state.get("role") == "admin":
     nav = st.sidebar.radio(
@@ -389,7 +285,7 @@ if not st.session_state.logged_in:
     username = st.text_input("Username", placeholder="Enter your username")
     pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
     if st.button("Login"):
-        # Simple authentication check
+        # Simple authentication
         conn2 = get_db_connection()
         c2 = conn2.cursor()
         c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hash_text(pin)))
@@ -397,7 +293,6 @@ if not st.session_state.logged_in:
         conn2.close()
         if row:
             role = row[1]
-            # Get user info and log login
             def get_user_by_username(username):
                 conn2 = get_db_connection()
                 c2 = conn2.cursor()
@@ -424,19 +319,9 @@ st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_
 if nav == "Home":
     st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
     st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
-    # Display a daily electrical safety tip (predefined)
-    safety_tips = [
-        "Always turn off the power before working on electrical systems.",
-        "Use insulated tools when handling live wires.",
-        "Keep a fire extinguisher near electrical installations.",
-        "Regularly inspect cords and plugs for wear and tear.",
-        "Ensure proper grounding to prevent electric shocks."
-    ]
-    tip = safety_tips[datetime.now().day % len(safety_tips)]
-    st.markdown(f"<div class='subheader'>🔒 Daily Safety Tip:</div> <p class='big-font'>{tip}</p>", unsafe_allow_html=True)
 
 # --------------------------------------------------------------------
-# ENTRY LOG (Admin Only) with Save & Reset Option for Monthly Log in PDF Format
+# ENTRY LOG (Admin Only) with Save & Reset Monthly Log PDF
 # --------------------------------------------------------------------
 elif nav == "Entry Log":
     if st.session_state.role == "admin":
@@ -454,8 +339,6 @@ elif nav == "Entry Log":
             st.table(df_log)
         else:
             st.write("No login entries recorded yet.")
-        
-        # Save & Reset Monthly Log (PDF Export)
         if st.button("Save & Reset Monthly Log (PDF)"):
             current_month = datetime.now().strftime("%Y-%m")
             df_log = pd.DataFrame(log_entries, columns=["Log ID", "User ID", "Username", "Timestamp"])
