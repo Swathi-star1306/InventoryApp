@@ -124,7 +124,7 @@ c.execute(
     """
 )
 
-# Vendors table
+# Vendors table with correct column names
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS vendors (
@@ -152,224 +152,82 @@ def add_login_log(user_id, username):
     conn2.close()
 
 # --------------------------------------------------------------------
-# Other Helper Functions (Categories, Items, Users, Transactions, Vendors)
+# Data Recovery & Reset Functions
 # --------------------------------------------------------------------
-def get_db_connection():
-    return sqlite3.connect("inventory.db", check_same_thread=False)
-
-def authenticate(username, pin):
+def backup_and_reset_data():
+    # Backup all data from categories, items, transactions, vendors, login_log (excluding users)
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    hashed = hash_text(pin)
-    c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hashed))
-    row = c2.fetchone()
-    conn2.close()
-    if row:
-        return row[1]
-    return None
-
-def add_category(name):
-    if not name.strip():
-        st.error("Please enter a valid category name.")
-        return False
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO categories (name) VALUES (?)", (name.strip(),))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("Category already exists.")
-        conn2.close()
-        return False
-
-def get_categories():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT name FROM categories")
-    cats = [row[0] for row in c2.fetchall()]
-    conn2.close()
-    return cats
-
-def add_item(category, name, quantity, vendor, threshold):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO items (category, name, quantity, threshold) VALUES (?, ?, ?, ?)",
-                   (category, name, quantity, threshold))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("Item already exists.")
-        conn2.close()
-        return False
-
-def get_items():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
+    c2.execute("SELECT * FROM categories")
+    categories = c2.fetchall()
     c2.execute("SELECT * FROM items")
     items = c2.fetchall()
+    c2.execute("SELECT * FROM transactions")
+    transactions = c2.fetchall()
+    c2.execute("SELECT * FROM vendors")
+    vendors = c2.fetchall()
+    c2.execute("SELECT * FROM login_log")
+    login_logs = c2.fetchall()
     conn2.close()
-    return items
-
-def get_items_by_category(category):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, quantity, threshold FROM items WHERE category=?", (category,))
-    items = c2.fetchall()
-    conn2.close()
-    return items
-
-def update_item_quantity(item_id, quantity):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("UPDATE items SET quantity=? WHERE id=?", (quantity, item_id))
-    conn2.commit()
-    conn2.close()
-
-def delete_item(item_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("DELETE FROM items WHERE id=?", (item_id,))
-    conn2.commit()
-    conn2.close()
-
-def add_user(name, role, pin):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    try:
-        c2.execute("INSERT INTO users (name, role, pin) VALUES (?, ?, ?)", (name, role, hash_text(pin)))
-        conn2.commit()
-        conn2.close()
-        return True
-    except sqlite3.IntegrityError:
-        st.error("User already exists or username is taken.")
-        conn2.close()
-        return False
-
-def get_users():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role FROM users")
-    users = c2.fetchall()
-    conn2.close()
-    return users
-
-def delete_user(user_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("DELETE FROM users WHERE id=?", (user_id,))
-    conn2.commit()
-    conn2.close()
-
-def get_user_by_username(username):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
-    user = c2.fetchone()
-    conn2.close()
-    return user
-
-def update_user_credentials(user_id, new_name, new_pin):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("UPDATE users SET name=?, pin=? WHERE id=?", (new_name, hash_text(new_pin), user_id))
-    conn2.commit()
-    conn2.close()
-
-def add_transaction(user_id, item_id, quantity_taken):
-    # Record IST timestamp (UTC+5:30)
-    ist = pytz.timezone('Asia/Kolkata')
-    ts = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
-               (user_id, item_id, quantity_taken, ts))
-    conn2.commit()
-    conn2.close()
-
-def get_transactions():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC
-        """
-    )
-    trans = c2.fetchall()
-    conn2.close()
-    return trans
-
-def get_last_transaction_for_item(item_id):
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT u.name, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        WHERE t.item_id = ? 
-        ORDER BY t.timestamp DESC 
-        LIMIT 1
-        """, (item_id,)
-    )
-    result = c2.fetchone()
-    conn2.close()
-    return result
-
-def generate_report_pdf(report_type):
-    txs = get_transactions()
-    filtered = []
-    now = datetime.now()
-    if report_type == "instant":
-        filtered = txs
-    else:
-        for tx in txs:
-            tx_time = datetime.strptime(tx[4], "%Y-%m-%d %H:%M:%S")
-            if report_type == "daily" and tx_time.date() == now.date():
-                filtered.append(tx)
-            elif report_type == "weekly" and (now - tx_time).days < 7:
-                filtered.append(tx)
-            elif report_type == "monthly" and (now - tx_time).days < 30:
-                filtered.append(tx)
-            elif report_type == "yearly" and (now - tx_time).days < 365:
-                filtered.append(tx)
-    if not filtered:
-        st.error("No transactions found for the selected period.")
-        return None
-    # Create DataFrame and add serial numbering starting from 1
-    df_tx = pd.DataFrame(filtered, columns=["Trans ID", "User", "Item", "Quantity Taken", "Timestamp"])
-    df_tx.insert(0, "S.No", range(1, len(df_tx) + 1))
-    filename = f"inventory_report_{report_type}_{now.strftime('%Y%m%d_%H%M%S')}.pdf"
-    cpdf = canvas.Canvas(filename, pagesize=letter)
+    
+    filename = f"data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    pdf = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
-    cpdf.setFont("Helvetica-Bold", 20)
-    cpdf.drawString(50, height - 50, f"Inventory Report - {report_type.capitalize()} Report 😊")
-    cpdf.setFont("Helvetica", 12)
-    y = height - 80
-    headers = ["S.No", "Trans ID", "User", "Item", "Quantity Taken", "Timestamp"]
-    x_positions = [30, 80, 140, 240, 350, 500]
-    for i, header in enumerate(headers):
-        cpdf.drawString(x_positions[i], y, header)
-    y -= 20
-    cpdf.setFont("Helvetica", 10)
-    for index, row in df_tx.iterrows():
-        if y < 50:
-            cpdf.showPage()
-            y = height - 50
-        for i, val in enumerate(row):
-            cpdf.drawString(x_positions[i], y, str(val))
-        y -= 15
-    cpdf.save()
+    y = height - 40
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(50, y, "Complete Data Backup Report")
+    y -= 30
+    sections = [
+        ("Categories", categories),
+        ("Items", items),
+        ("Transactions", transactions),
+        ("Vendors", vendors),
+        ("Login Logs", login_logs)
+    ]
+    for title, data in sections:
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(50, y, f"{title}:")
+        y -= 20
+        pdf.setFont("Helvetica", 10)
+        if data:
+            for row in data:
+                line = ", ".join(str(x) for x in row)
+                pdf.drawString(50, y, line)
+                y -= 15
+                if y < 50:
+                    pdf.showPage()
+                    y = height - 40
+        else:
+            pdf.drawString(50, y, "No records.")
+            y -= 15
+        y -= 10
+    pdf.save()
+    
+    # Reset data: delete all records from categories, items, transactions, vendors, login_log
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("DELETE FROM categories")
+    c2.execute("DELETE FROM items")
+    c2.execute("DELETE FROM transactions")
+    c2.execute("DELETE FROM vendors")
+    c2.execute("DELETE FROM login_log")
+    conn2.commit()
+    conn2.close()
+    
     return filename
 
-# ---------------- Vendor Management Functions ----------------
+def reset_login_log():
+    # Delete all records from login_log and reset the autoincrement
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("DELETE FROM login_log")
+    c2.execute("DELETE FROM sqlite_sequence WHERE name='login_log'")
+    conn2.commit()
+    conn2.close()
+
+# --------------------------------------------------------------------
+# Vendor Management Functions
+# --------------------------------------------------------------------
 def add_vendor(vendor_name, contact, item_supplied, address, quantity_bought, points):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
@@ -405,69 +263,6 @@ def delete_vendor(vendor_id):
     conn2.commit()
     conn2.close()
 
-# ---------------- Data Recovery & Reset Function ----------------
-def backup_and_reset_data():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    # Gather data from tables (excluding users)
-    c2.execute("SELECT * FROM categories")
-    categories = c2.fetchall()
-    c2.execute("SELECT * FROM items")
-    items = c2.fetchall()
-    c2.execute("SELECT * FROM transactions")
-    transactions = c2.fetchall()
-    c2.execute("SELECT * FROM vendors")
-    vendors = c2.fetchall()
-    c2.execute("SELECT * FROM login_log")
-    login_logs = c2.fetchall()
-    conn2.close()
-    
-    filename = f"data_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    pdf = canvas.Canvas(filename, pagesize=letter)
-    width, height = letter
-    y = height - 40
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(50, y, "Complete Data Backup Report")
-    y -= 30
-    sections = [
-        ("Categories", categories),
-        ("Items", items),
-        ("Transactions", transactions),
-        ("Vendors", vendors),
-        ("Login Logs", login_logs)
-    ]
-    for section_title, data in sections:
-        pdf.setFont("Helvetica-Bold", 14)
-        pdf.drawString(50, y, f"{section_title}:")
-        y -= 20
-        pdf.setFont("Helvetica", 10)
-        if data:
-            for row in data:
-                line = ", ".join(str(x) for x in row)
-                pdf.drawString(50, y, line)
-                y -= 15
-                if y < 50:
-                    pdf.showPage()
-                    y = height - 40
-        else:
-            pdf.drawString(50, y, "No records.")
-            y -= 15
-        y -= 10
-    pdf.save()
-    
-    # Reset data: delete all records from categories, items, transactions, vendors, login_log
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("DELETE FROM categories")
-    c2.execute("DELETE FROM items")
-    c2.execute("DELETE FROM transactions")
-    c2.execute("DELETE FROM vendors")
-    c2.execute("DELETE FROM login_log")
-    conn2.commit()
-    conn2.close()
-    
-    return filename
-
 # --------------------------------------------------------------------
 # Display Low Stock Alerts
 # --------------------------------------------------------------------
@@ -493,11 +288,10 @@ def display_low_stock_alerts():
 display_low_stock_alerts()
 
 # --------------------------------------------------------------------
-# LOGOUT BUTTON (Available in Sidebar)
+# Logout Button (Available in Sidebar)
 # --------------------------------------------------------------------
 if st.sidebar.button("Logout"):
     st.session_state.clear()
-    # Instead of experimental_rerun(), simply stop the app (it will refresh on next run)
     st.stop()
 
 # --------------------------------------------------------------------
