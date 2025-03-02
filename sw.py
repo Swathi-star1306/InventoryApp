@@ -1,16 +1,13 @@
 import streamlit as st
 import os
-from datetime import datetime
 import sqlite3
 import hashlib
 import pandas as pd
+from datetime import datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-# -----------------------------
-# Set Page Configuration
-# -----------------------------
-st.set_page_config(page_title="Inventory Management System", layout="wide")
+st.set_page_config(page_title="Electrical Inventory Management", layout="wide")
 
 # -----------------------------
 # Display Official Logo in Sidebar
@@ -19,40 +16,47 @@ logo_url = "https://i.imgur.com/e6E6TJt.jpeg"
 st.sidebar.image(logo_url, width=150)
 
 # -----------------------------
-# Custom CSS for Professional Look
+# Custom Fonts & UI Styling
 # -----------------------------
 st.markdown(
     """
     <style>
-    body { background-color: #f9f9f9; }
-    .header { font-size: 36px; color: #2C3E50; font-weight: bold; margin-bottom: 20px; }
-    .subheader { font-size: 28px; color: #34495E; margin-bottom: 15px; }
-    .low-stock { color: #D32F2F; font-weight: bold; font-size: 20px; }
+    .header { font-size: 32px; font-weight: bold; color: #4B0082; }
+    .subheader { font-size: 24px; font-weight: bold; color: #800080; }
+    .low-stock { color: #D32F2F; font-weight: bold; font-size: 18px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # -----------------------------
-# Database Connection
-# -----------------------------
-def get_db_connection():
-    return sqlite3.connect("inventory.db", check_same_thread=False)
-
-# -----------------------------
-# Hash Function for Security
+# Helper Functions
 # -----------------------------
 def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
+def get_db_connection():
+    return sqlite3.connect("inventory.db", check_same_thread=False)
+
+def execute_query(query, params=()):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(query, params)
+    conn.commit()
+    conn.close()
+
+def fetch_query(query, params=()):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(query, params)
+    data = c.fetchall()
+    conn.close()
+    return data
+
 # -----------------------------
 # Database Setup
 # -----------------------------
-conn = get_db_connection()
-c = conn.cursor()
-
-# Users Table
-c.execute(
+execute_query(
     """
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,10 +66,7 @@ c.execute(
     )
     """
 )
-conn.commit()
-
-# Items Table
-c.execute(
+execute_query(
     """
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,168 +77,116 @@ c.execute(
     )
     """
 )
-
-# Transactions Table
-c.execute(
+execute_query(
     """
     CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         item_id INTEGER NOT NULL,
         quantity_taken INTEGER NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (item_id) REFERENCES items(id)
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """
 )
-conn.commit()
-
-# Vendor Table
-c.execute(
+execute_query(
     """
     CREATE TABLE IF NOT EXISTS vendors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        vendor_name TEXT NOT NULL,
+        name TEXT NOT NULL,
         contact TEXT NOT NULL,
         address TEXT NOT NULL,
-        item_supplied TEXT NOT NULL
+        item_vendored TEXT NOT NULL
     )
     """
 )
-conn.commit()
+execute_query(
+    """
+    CREATE TABLE IF NOT EXISTS login_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+)
 
-# Insert Default Users
-c.execute("SELECT COUNT(*) FROM users")
-if c.fetchone()[0] == 0:
-    c.execute("INSERT INTO users (name, role, pin) VALUES (?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass")))
-    c.execute("INSERT INTO users (name, role, pin) VALUES (?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass")))
-    conn.commit()
+def authenticate(username, pin):
+    hashed_pin = hash_text(pin)
+    user = fetch_query("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hashed_pin))
+    return user[0] if user else None
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
-def get_items():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, category, name, quantity, threshold FROM items")
-    items = c.fetchall()
-    conn.close()
-    return items
+def add_transaction(user_id, item_id, quantity_taken):
+    execute_query("INSERT INTO transactions (user_id, item_id, quantity_taken) VALUES (?, ?, ?)",
+                 (user_id, item_id, quantity_taken))
 
-def add_item(category, name, quantity, threshold):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("INSERT INTO items (category, name, quantity, threshold) VALUES (?, ?, ?, ?)", 
-              (category, name, quantity, threshold))
-    conn.commit()
-    conn.close()
+def generate_pdf(data, filename, title, columns):
+    pdf = canvas.Canvas(filename, pagesize=letter)
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(50, 750, title)
+    pdf.setFont("Helvetica", 12)
+    y = 720
+    for i, header in enumerate(columns):
+        pdf.drawString(50 + i * 120, y, header)
+    y -= 20
+    for row in data:
+        if y < 50:
+            pdf.showPage()
+            y = 750
+        for i, value in enumerate(row):
+            pdf.drawString(50 + i * 120, y, str(value))
+        y -= 20
+    pdf.save()
+    return filename
 
-def update_item_quantity(item_id, quantity):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("UPDATE items SET quantity=? WHERE id=?", (quantity, item_id))
-    conn.commit()
-    conn.close()
+def generate_user_pdf():
+    users = fetch_query("SELECT id, name, role FROM users")
+    return generate_pdf(users, "user_report.pdf", "User Management Report", ["ID", "Name", "Role"])
 
-def display_low_stock_alerts():
-    items = get_items()
-    low_stock = [item for item in items if item[3] < item[4]]
-    if low_stock:
-        st.sidebar.markdown("<div class='low-stock'><b>⚠️ Low Stock Alerts:</b></div>", unsafe_allow_html=True)
-        for item in low_stock:
-            st.sidebar.write(f"{item[2]} (Qty: {item[3]}, Threshold: {item[4]})")
-    else:
-        st.sidebar.write("✅ All stock levels are sufficient.")
+def generate_inventory_pdf():
+    items = fetch_query("SELECT * FROM items")
+    return generate_pdf(items, "inventory_report.pdf", "Inventory Report", ["ID", "Category", "Name", "Quantity", "Threshold"])
 
-# -----------------------------
-# Streamlit UI & Navigation
-# -----------------------------
-display_low_stock_alerts()
+def generate_vendor_pdf():
+    vendors = fetch_query("SELECT * FROM vendors")
+    return generate_pdf(vendors, "vendor_report.pdf", "Vendor Report", ["ID", "Name", "Contact", "Address", "Item"])
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.role = None
-    st.session_state.username = ""
-
-if not st.session_state.logged_in:
-    st.markdown("<div class='header'>🔐 Login</div>", unsafe_allow_html=True)
-    username = st.text_input("Username", placeholder="Enter your username")
-    pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
-    if st.button("Login"):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hash_text(pin)))
-        user = c.fetchone()
-        conn.close()
-        if user:
-            st.session_state.logged_in = True
-            st.session_state.role = user[1]
-            st.session_state.username = username
-            st.rerun()
-        else:
-            st.error("Invalid username or PIN")
-    st.stop()
-
-st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_state.role.capitalize()} 😊)")
-
-# Navigation Menu
-nav = st.sidebar.radio("Menu", ["Home", "Add Items", "View Inventory", "Reports", "Vendors"])
+def generate_entry_log_pdf():
+    logs = fetch_query("SELECT * FROM login_log")
+    return generate_pdf(logs, "entry_log.pdf", "Entry Log Report", ["ID", "User ID", "Username", "Timestamp"])
 
 # -----------------------------
-# Home Page
+# Streamlit UI
 # -----------------------------
-if nav == "Home":
-    st.markdown("<div class='header'>🏠 Home</div>", unsafe_allow_html=True)
-    st.write("Welcome to the Inventory Management System! 🚀")
+st.sidebar.title("Navigation")
+navigation = st.sidebar.radio("Select Page", ["Home", "User Management", "Inventory", "Vendors", "Reports", "Entry Log"])
 
-# -----------------------------
-# Add Items Page
-# -----------------------------
-elif nav == "Add Items":
-    st.markdown("<div class='header'>📦 Add New Item</div>", unsafe_allow_html=True)
-    category = st.text_input("Category", placeholder="Enter item category")
-    name = st.text_input("Item Name", placeholder="Enter item name")
-    quantity = st.number_input("Quantity", min_value=1, step=1)
-    threshold = st.number_input("Low Stock Threshold", min_value=1, step=1)
-    if st.button("Add Item"):
-        add_item(category, name, quantity, threshold)
-        st.success("Item added successfully!")
+if navigation == "Home":
+    st.title("🏠 Electrical Inventory Management System")
+    st.write("Welcome to the inventory management system for electrical goods.")
 
-# -----------------------------
-# View Inventory Page
-# -----------------------------
-elif nav == "View Inventory":
-    st.markdown("<div class='header'>📋 Inventory Items</div>", unsafe_allow_html=True)
-    items = get_items()
-    df = pd.DataFrame(items, columns=["ID", "Category", "Name", "Quantity", "Threshold"])
-    st.table(df)
+elif navigation == "User Management":
+    st.title("👥 User Management")
+    if st.button("Export User Data to PDF"):
+        filename = generate_user_pdf()
+        st.download_button("Download User Report", open(filename, "rb"), file_name=filename)
 
-# -----------------------------
-# Reports Page
-# -----------------------------
-elif nav == "Reports":
-    st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
-    report_type = st.selectbox("Select Report Type", ["Daily", "Weekly", "Monthly"])
-    st.write(f"Generating {report_type} report...")
+elif navigation == "Inventory":
+    st.title("📦 Inventory Management")
+    if st.button("Export Inventory Data to PDF"):
+        filename = generate_inventory_pdf()
+        st.download_button("Download Inventory Report", open(filename, "rb"), file_name=filename)
 
-# -----------------------------
-# Vendor Management
-# -----------------------------
-elif nav == "Vendors":
-    st.markdown("<div class='header'>🏭 Vendor Management</div>", unsafe_allow_html=True)
-    vendor_name = st.text_input("Vendor Name", placeholder="Enter vendor name")
-    contact = st.text_input("Contact", placeholder="Enter vendor contact number")
-    address = st.text_input("Address", placeholder="Enter vendor address")
-    item_supplied = st.text_input("Item Supplied", placeholder="Enter the item they supply")
-    if st.button("Add Vendor"):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("INSERT INTO vendors (vendor_name, contact, address, item_supplied) VALUES (?, ?, ?, ?)",
-                  (vendor_name, contact, address, item_supplied))
-        conn.commit()
-        conn.close()
-        st.success("Vendor added successfully!")
+elif navigation == "Vendors":
+    st.title("🏭 Vendor Management")
+    if st.button("Export Vendor Data to PDF"):
+        filename = generate_vendor_pdf()
+        st.download_button("Download Vendor Report", open(filename, "rb"), file_name=filename)
+
+elif navigation == "Entry Log":
+    st.title("📜 Entry Log")
+    if st.button("Export Entry Log to PDF"):
+        filename = generate_entry_log_pdf()
+        st.download_button("Download Entry Log Report", open(filename, "rb"), file_name=filename)
 
 
 
