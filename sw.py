@@ -37,21 +37,24 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------
-# Helper Functions
+# Helper Function to Hash Text
 # --------------------------------------------------------------------
 def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
+# --------------------------------------------------------------------
+# Global Database Connection Helper
+# --------------------------------------------------------------------
 def get_db_connection():
     return sqlite3.connect("inventory.db", check_same_thread=False)
 
-# -----------------------------
+# --------------------------------------------------------------------
 # Database Setup
-# -----------------------------
+# --------------------------------------------------------------------
 conn = get_db_connection()
 c = conn.cursor()
 
-# Create Users table (all users auto-approved)
+# Users table (all users auto-approved)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -119,7 +122,7 @@ c.execute(
 )
 conn.commit()
 
-# Transactions table
+# Transactions table to log item take events
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -258,6 +261,48 @@ def update_user_credentials(user_id, new_name, new_pin):
     conn2.commit()
     conn2.close()
 
+def add_transaction(user_id, item_id, quantity_taken):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
+               (user_id, item_id, quantity_taken, ts))
+    conn2.commit()
+    conn2.close()
+
+def get_transactions():
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute(
+        """
+        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        JOIN items i ON t.item_id = i.id 
+        ORDER BY t.timestamp DESC
+        """
+    )
+    trans = c2.fetchall()
+    conn2.close()
+    return trans
+
+def get_last_transaction_for_item(item_id):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute(
+        """
+        SELECT u.name, t.timestamp 
+        FROM transactions t 
+        JOIN users u ON t.user_id = u.id 
+        WHERE t.item_id = ? 
+        ORDER BY t.timestamp DESC 
+        LIMIT 1
+        """, (item_id,)
+    )
+    result = c2.fetchone()
+    conn2.close()
+    return result
+
 # --------------------------------------------------------------------
 # PDF Generation Functions
 # --------------------------------------------------------------------
@@ -322,10 +367,6 @@ def generate_vendor_pdf():
         y -= 15
     cpdf.save()
     return filename
-
-# --------------------------------------------------------------------
-# Additional PDF functions for future expansion could be added here.
-# --------------------------------------------------------------------
 
 # --------------------------------------------------------------------
 # Sidebar: Low Stock Alerts
@@ -411,7 +452,7 @@ if nav == "Home":
     st.write("Welcome to the Professional Electrical Goods Inventory Management System! 🚀")
 
 # --------------------------------------------------------------------
-# ENTRY LOG (Admin Only) with Save & Reset Monthly Log PDF
+# ENTRY LOG (Admin Only)
 # --------------------------------------------------------------------
 elif nav == "Entry Log":
     if st.session_state.role == "admin":
@@ -458,7 +499,6 @@ elif nav == "Manage Categories":
     new_category = st.text_input("New Category Name", placeholder="Enter category name")
     if st.button("Add Category"):
         if new_category and new_category.strip() != "":
-            # Insert category
             try:
                 conn2 = get_db_connection()
                 c2 = conn2.cursor()
@@ -650,8 +690,8 @@ elif nav == "Reports":
         st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
         report_type = st.radio("Select Report Type", ["Instant", "Daily", "Weekly", "Monthly", "Yearly"])
         if st.button("Generate PDF Report"):
+            # For simplicity, we'll generate the entry log PDF if "Instant" is chosen.
             filename = generate_entry_log_pdf() if report_type.lower() == "instant" else None
-            # For simplicity, only Instant report is generated from entry log PDF here.
             if filename and os.path.exists(filename):
                 st.success(f"PDF Report generated: {filename}")
                 with open(filename, "rb") as f:
@@ -760,5 +800,6 @@ elif nav == "About":
                 st.error("Failed to generate Vendor PDF.")
     else:
         st.write("No vendor information available.")
+
 
 
