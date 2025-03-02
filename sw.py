@@ -166,7 +166,9 @@ update_vendor_schema()
 # Additional Helper Functions for Logging
 # --------------------------------------------------------------------
 def add_login_log(user_id, username):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Use IST timestamp for login log
+    ist = pytz.timezone('Asia/Kolkata')
+    ts = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
     conn2 = sqlite3.connect("inventory.db", check_same_thread=False)
     c2 = conn2.cursor()
     c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
@@ -541,20 +543,23 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state.logged_in:
     st.markdown("<div class='header'>🔐 Login</div>", unsafe_allow_html=True)
-    username = st.text_input("Username", placeholder="Enter your username")
-    pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
-    if st.button("Login"):
-        role = authenticate(username, pin)
-        if role:
-            user_info = get_user_by_username(username)
-            if user_info:
-                add_login_log(user_info[0], username)
-            st.session_state.logged_in = True
-            st.session_state.role = role
-            st.session_state.username = username
-        else:
-            st.error("❌ Invalid username or PIN. Please try again.")
-    st.stop()
+    with st.form("login_form"):
+        username = st.text_input("Username", placeholder="Enter your username")
+        pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
+        submitted = st.form_submit_button("Login")
+        if submitted:
+            role = authenticate(username, pin)
+            if role:
+                user_info = get_user_by_username(username)
+                if user_info:
+                    add_login_log(user_info[0], username)
+                st.session_state.logged_in = True
+                st.session_state.role = role
+                st.session_state.username = username
+            else:
+                st.error("❌ Invalid username or PIN. Please try again.")
+    if not st.session_state.logged_in:
+        st.stop()
 
 st.sidebar.success(f"Logged in as: **{st.session_state.username}** ({st.session_state.role.capitalize()} 😊)")
 
@@ -865,7 +870,6 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
-
 
 
 
