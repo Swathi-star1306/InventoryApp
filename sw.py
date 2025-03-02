@@ -404,7 +404,7 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.role = role
             st.session_state.username = username
-            st.experimental_rerun()
+            # Removed st.experimental_rerun() to avoid error
         else:
             st.error("❌ Invalid username or PIN. Please try again.")
     st.stop()
