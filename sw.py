@@ -9,7 +9,6 @@ import hashlib
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import pdfkit
 
 # Barcode functionality removed in this version.
 barcode_scanner_enabled = False
@@ -660,5 +659,4 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
-
 
