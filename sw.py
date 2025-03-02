@@ -37,26 +37,22 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------
-# Helper Function to Hash Text
+# Helper Functions
 # --------------------------------------------------------------------
 def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
-# --------------------------------------------------------------------
-# Global Database Connection Helper
-# --------------------------------------------------------------------
 def get_db_connection():
     return sqlite3.connect("inventory.db", check_same_thread=False)
 
 # --------------------------------------------------------------------
-# Database Setup
+# DATABASE SETUP
 # --------------------------------------------------------------------
 conn = get_db_connection()
 c = conn.cursor()
 
-# Users table (all users auto-approved)
-c.execute(
-    """
+# Create Users table (all users auto-approved)
+c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
@@ -64,13 +60,11 @@ c.execute(
         pin TEXT NOT NULL,
         approved INTEGER NOT NULL DEFAULT 1
     )
-    """
-)
+""")
 conn.commit()
 
-# login_requests table (not used anymore)
-c.execute(
-    """
+# Create login_requests table (not used)
+c.execute("""
     CREATE TABLE IF NOT EXISTS login_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -78,13 +72,11 @@ c.execute(
         status TEXT NOT NULL DEFAULT 'pending',
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
-    """
-)
+""")
 conn.commit()
 
-# login_log table to record every successful login
-c.execute(
-    """
+# Create login_log table
+c.execute("""
     CREATE TABLE IF NOT EXISTS login_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -92,24 +84,20 @@ c.execute(
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
-    """
-)
+""")
 conn.commit()
 
-# Categories table
-c.execute(
-    """
+# Create Categories table
+c.execute("""
     CREATE TABLE IF NOT EXISTS categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE NOT NULL
     )
-    """
-)
+""")
 conn.commit()
 
-# Items table (barcode removed)
-c.execute(
-    """
+# Create Items table (barcode removed)
+c.execute("""
     CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
@@ -118,13 +106,11 @@ c.execute(
         threshold INTEGER NOT NULL,
         FOREIGN KEY (category) REFERENCES categories(name)
     )
-    """
-)
+""")
 conn.commit()
 
-# Transactions table to log item take events
-c.execute(
-    """
+# Create Transactions table
+c.execute("""
     CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -134,13 +120,11 @@ c.execute(
         FOREIGN KEY (user_id) REFERENCES users(id),
         FOREIGN KEY (item_id) REFERENCES items(id)
     )
-    """
-)
+""")
 conn.commit()
 
-# Staff Information Table
-c.execute(
-    """
+# Create Staff Information Table
+c.execute("""
     CREATE TABLE IF NOT EXISTS staff_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         staff_id TEXT,
@@ -149,13 +133,11 @@ c.execute(
         email TEXT,
         additional_details TEXT
     )
-    """
-)
+""")
 conn.commit()
 
-# Vendor Information Table (with extra field for the item they supply)
-c.execute(
-    """
+# Create Vendor Information Table (with extra field for item vendored)
+c.execute("""
     CREATE TABLE IF NOT EXISTS vendor_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         vendor_name TEXT,
@@ -164,8 +146,7 @@ c.execute(
         item_vendored TEXT,
         additional_details TEXT
     )
-    """
-)
+""")
 conn.commit()
 
 # Insert default users if none exist
@@ -176,11 +157,10 @@ if c.fetchone()[0] == 0:
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 1))
     c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 1))
     conn.commit()
-
 conn.close()
 
 # --------------------------------------------------------------------
-# Additional Helper Functions for Data Operations
+# Data Operation Functions
 # --------------------------------------------------------------------
 def get_categories():
     conn2 = get_db_connection()
@@ -273,15 +253,13 @@ def add_transaction(user_id, item_id, quantity_taken):
 def get_transactions():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute(
-        """
+    c2.execute("""
         SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
         FROM transactions t 
         JOIN users u ON t.user_id = u.id 
         JOIN items i ON t.item_id = i.id 
         ORDER BY t.timestamp DESC
-        """
-    )
+    """)
     trans = c2.fetchall()
     conn2.close()
     return trans
@@ -289,16 +267,14 @@ def get_transactions():
 def get_last_transaction_for_item(item_id):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute(
-        """
+    c2.execute("""
         SELECT u.name, t.timestamp 
         FROM transactions t 
         JOIN users u ON t.user_id = u.id 
         WHERE t.item_id = ? 
         ORDER BY t.timestamp DESC 
         LIMIT 1
-        """, (item_id,)
-    )
+    """, (item_id,))
     result = c2.fetchone()
     conn2.close()
     return result
@@ -395,10 +371,7 @@ display_low_stock_alerts()
 # STREAMLIT UI & NAVIGATION
 # --------------------------------------------------------------------
 if st.session_state.get("role") == "admin":
-    nav = st.sidebar.radio(
-        "Navigation",
-        ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Entry Log", "Account Settings", "About"]
-    )
+    nav = st.sidebar.radio("Navigation", ["Home", "Manage Categories", "Add Items", "View Inventory", "User Management", "Reports", "Entry Log", "Account Settings", "About"])
 elif st.session_state.get("role") == "staff":
     nav = st.sidebar.radio("Navigation", ["Home", "Take Items", "View Inventory", "Account Settings", "About"])
 else:
@@ -690,7 +663,7 @@ elif nav == "Reports":
         st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
         report_type = st.radio("Select Report Type", ["Instant", "Daily", "Weekly", "Monthly", "Yearly"])
         if st.button("Generate PDF Report"):
-            # For simplicity, we'll generate the entry log PDF if "Instant" is chosen.
+            # For simplicity, if "Instant" is chosen, generate entry log PDF.
             filename = generate_entry_log_pdf() if report_type.lower() == "instant" else None
             if filename and os.path.exists(filename):
                 st.success(f"PDF Report generated: {filename}")
@@ -702,15 +675,13 @@ elif nav == "Reports":
         def get_transactions():
             conn2 = get_db_connection()
             c2 = conn2.cursor()
-            c2.execute(
-                """
+            c2.execute("""
                 SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
                 FROM transactions t 
                 JOIN users u ON t.user_id = u.id 
                 JOIN items i ON t.item_id = i.id 
                 ORDER BY t.timestamp DESC
-                """
-            )
+            """)
             trans = c2.fetchall()
             conn2.close()
             return trans
@@ -772,7 +743,11 @@ elif nav == "About":
     if st.button("Add Staff Info"):
         add_staff_info(staff_id, staff_name, mobile, email, additional_details)
         st.success("Staff information added.")
-    staff_info = get_staff_info()
+    staff_info = None
+    try:
+        staff_info = get_staff_info()
+    except Exception as e:
+        st.error("Error fetching staff info.")
     if staff_info:
         df_staff = pd.DataFrame(staff_info, columns=["ID", "Staff ID", "Name", "Mobile", "Email", "Additional Details"])
         st.table(df_staff)
@@ -788,7 +763,11 @@ elif nav == "About":
     if st.button("Add Vendor Info"):
         add_vendor_info(vendor_name, contact, address, item_vendored, vendor_additional)
         st.success("Vendor information added.")
-    vendor_info = get_vendor_info()
+    vendor_info = None
+    try:
+        vendor_info = get_vendor_info()
+    except Exception as e:
+        st.error("Error fetching vendor info.")
     if vendor_info:
         df_vendor = pd.DataFrame(vendor_info, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
         st.table(df_vendor)
@@ -800,6 +779,7 @@ elif nav == "About":
                 st.error("Failed to generate Vendor PDF.")
     else:
         st.write("No vendor information available.")
+
 
 
 
