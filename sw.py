@@ -37,24 +37,21 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------
-# Helper Function to Hash Text
+# Helper Functions
 # --------------------------------------------------------------------
 def hash_text(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
-# --------------------------------------------------------------------
-# Global Database Connection Helper
-# --------------------------------------------------------------------
 def get_db_connection():
     return sqlite3.connect("inventory.db", check_same_thread=False)
 
-# --------------------------------------------------------------------
-# DATABASE SETUP
-# --------------------------------------------------------------------
+# -----------------------------
+# Database Setup
+# -----------------------------
 conn = get_db_connection()
 c = conn.cursor()
 
-# Users table (all users auto-approved)
+# Create Users table (all users auto-approved)
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -105,6 +102,7 @@ c.execute(
     )
     """
 )
+conn.commit()
 
 # Items table (barcode removed)
 c.execute(
@@ -119,8 +117,9 @@ c.execute(
     )
     """
 )
+conn.commit()
 
-# Transactions table to log item take events
+# Transactions table
 c.execute(
     """
     CREATE TABLE IF NOT EXISTS transactions (
@@ -136,61 +135,131 @@ c.execute(
 )
 conn.commit()
 
+# Staff Information Table
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS staff_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_id TEXT,
+        name TEXT,
+        mobile TEXT,
+        email TEXT,
+        additional_details TEXT
+    )
+    """
+)
+conn.commit()
+
+# Vendor Information Table (with extra field for the item they supply)
+c.execute(
+    """
+    CREATE TABLE IF NOT EXISTS vendor_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vendor_name TEXT,
+        contact TEXT,
+        address TEXT,
+        item_vendored TEXT,
+        additional_details TEXT
+    )
+    """
+)
+conn.commit()
+
+# Insert default users if none exist
+c.execute("SELECT COUNT(*) FROM users")
+if c.fetchone()[0] == 0:
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin1", "admin", hash_text("admin1pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Admin2", "admin", hash_text("admin2pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff1", "staff", hash_text("staff1pass"), 1))
+    c.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", ("Staff2", "staff", hash_text("staff2pass"), 1))
+    conn.commit()
+
+conn.close()
+
 # --------------------------------------------------------------------
-# Additional Helper Functions
+# Additional Helper Functions for Data Operations
 # --------------------------------------------------------------------
-def add_login_log(user_id, username):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def get_categories():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("INSERT INTO login_log (user_id, username, timestamp) VALUES (?, ?, ?)", (user_id, username, ts))
+    c2.execute("SELECT name FROM categories")
+    cats = [row[0] for row in c2.fetchall()]
+    conn2.close()
+    return cats
+
+def add_item(category, name, quantity, threshold):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    try:
+        c2.execute("INSERT INTO items (category, name, quantity, threshold) VALUES (?, ?, ?, ?)",
+                   (category, name, quantity, threshold))
+        conn2.commit()
+        conn2.close()
+        return True
+    except sqlite3.IntegrityError:
+        st.error("Item already exists.")
+        conn2.close()
+        return False
+
+def update_item_quantity(item_id, quantity):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("UPDATE items SET quantity=? WHERE id=?", (quantity, item_id))
     conn2.commit()
     conn2.close()
 
-def add_transaction(user_id, item_id, quantity_taken):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def delete_item(item_id):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute("INSERT INTO transactions (user_id, item_id, quantity_taken, timestamp) VALUES (?, ?, ?, ?)",
-               (user_id, item_id, quantity_taken, ts))
+    c2.execute("DELETE FROM items WHERE id=?", (item_id,))
     conn2.commit()
     conn2.close()
 
-def get_transactions():
+def add_user(name, role, pin):
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC
-        """
-    )
-    trans = c2.fetchall()
-    conn2.close()
-    return trans
+    try:
+        c2.execute("INSERT INTO users (name, role, pin, approved) VALUES (?, ?, ?, ?)", (name, role, hash_text(pin), 1))
+        conn2.commit()
+        conn2.close()
+        return True
+    except sqlite3.IntegrityError:
+        st.error("User already exists or username is taken.")
+        conn2.close()
+        return False
 
-def get_last_transaction_for_item(item_id):
+def get_users():
     conn2 = get_db_connection()
     c2 = conn2.cursor()
-    c2.execute(
-        """
-        SELECT u.name, t.timestamp 
-        FROM transactions t 
-        JOIN users u ON t.user_id = u.id 
-        WHERE t.item_id = ? 
-        ORDER BY t.timestamp DESC 
-        LIMIT 1
-        """, (item_id,)
-    )
-    result = c2.fetchone()
+    c2.execute("SELECT id, name, role FROM users")
+    users = c2.fetchall()
     conn2.close()
-    return result
+    return users
+
+def delete_user(user_id):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn2.commit()
+    conn2.close()
+
+def get_user_by_username(username):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("SELECT id, name, role FROM users WHERE LOWER(name)=LOWER(?)", (username,))
+    user = c2.fetchone()
+    conn2.close()
+    return user
+
+def update_user_credentials(user_id, new_name, new_pin):
+    conn2 = get_db_connection()
+    c2 = conn2.cursor()
+    c2.execute("UPDATE users SET name=?, pin=? WHERE id=?", (new_name, hash_text(new_pin), user_id))
+    conn2.commit()
+    conn2.close()
 
 # --------------------------------------------------------------------
-# Generate Entry Log PDF
+# PDF Generation Functions
 # --------------------------------------------------------------------
 def generate_entry_log_pdf():
     conn2 = get_db_connection()
@@ -225,16 +294,38 @@ def generate_entry_log_pdf():
     cpdf.save()
     return filename
 
+def generate_vendor_pdf():
+    vendors = get_vendor_info()
+    if not vendors:
+        st.error("No vendor information found.")
+        return None
+    df_vendor = pd.DataFrame(vendors, columns=["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"])
+    filename = f"vendor_details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    cpdf = canvas.Canvas(filename, pagesize=letter)
+    width, height = letter
+    cpdf.setFont("Helvetica-Bold", 20)
+    cpdf.drawString(50, height - 50, "Vendor Details Report")
+    cpdf.setFont("Helvetica", 12)
+    y = height - 80
+    headers = ["ID", "Vendor Name", "Contact", "Address", "Item Vendored", "Additional Details"]
+    x_positions = [50, 100, 250, 350, 500, 650]
+    for i, header in enumerate(headers):
+        cpdf.drawString(x_positions[i], y, header)
+    y -= 20
+    cpdf.setFont("Helvetica", 10)
+    for index, row in df_vendor.iterrows():
+        if y < 50:
+            cpdf.showPage()
+            y = height - 50
+        for i, val in enumerate(row):
+            cpdf.drawString(x_positions[i], y, str(val))
+        y -= 15
+    cpdf.save()
+    return filename
+
 # --------------------------------------------------------------------
-# Global Helper: get_items
+# Additional PDF functions for future expansion could be added here.
 # --------------------------------------------------------------------
-def get_items():
-    conn2 = get_db_connection()
-    c2 = conn2.cursor()
-    c2.execute("SELECT * FROM items")
-    items = c2.fetchall()
-    conn2.close()
-    return items
 
 # --------------------------------------------------------------------
 # Sidebar: Low Stock Alerts
@@ -285,7 +376,6 @@ if not st.session_state.logged_in:
     username = st.text_input("Username", placeholder="Enter your username")
     pin = st.text_input("PIN", type="password", placeholder="Enter your PIN")
     if st.button("Login"):
-        # Simple authentication
         conn2 = get_db_connection()
         c2 = conn2.cursor()
         c2.execute("SELECT id, role FROM users WHERE name=? AND pin=?", (username, hash_text(pin)))
@@ -367,8 +457,19 @@ elif nav == "Manage Categories":
     st.markdown("<div class='header'>📂 Manage Categories</div>", unsafe_allow_html=True)
     new_category = st.text_input("New Category Name", placeholder="Enter category name")
     if st.button("Add Category"):
-        if add_category(new_category):
-            st.success(f"Category '{new_category}' added successfully! 🎉")
+        if new_category and new_category.strip() != "":
+            # Insert category
+            try:
+                conn2 = get_db_connection()
+                c2 = conn2.cursor()
+                c2.execute("INSERT INTO categories (name) VALUES (?)", (new_category.strip(),))
+                conn2.commit()
+                conn2.close()
+                st.success(f"Category '{new_category}' added successfully! 🎉")
+            except sqlite3.IntegrityError:
+                st.error("Category already exists.")
+        else:
+            st.error("Please enter a valid category name.")
     st.markdown("<div class='subheader'>Existing Categories:</div>", unsafe_allow_html=True)
     cats = get_categories()
     if cats:
@@ -388,7 +489,7 @@ elif nav == "Add Items":
         quantity = st.number_input("Quantity", min_value=1, step=1)
         threshold = st.number_input("Low Stock Threshold", min_value=1, step=1)
         if st.button("Add Item"):
-            if item_name:
+            if item_name and item_name.strip() != "":
                 if add_item(category, item_name, quantity, threshold):
                     st.success(f"Item '{item_name}' added to category '{category}'! 👍")
             else:
@@ -521,6 +622,13 @@ elif nav == "User Management":
             else:
                 st.error("Please enter valid user details.")
         st.markdown("<div class='subheader'>Existing Users:</div>", unsafe_allow_html=True)
+        def get_users():
+            conn2 = get_db_connection()
+            c2 = conn2.cursor()
+            c2.execute("SELECT id, name, role FROM users")
+            users = c2.fetchall()
+            conn2.close()
+            return users
         users = get_users()
         if users:
             df_users = pd.DataFrame(users, columns=["User ID", "Username", "Role"])
@@ -542,7 +650,8 @@ elif nav == "Reports":
         st.markdown("<div class='header'>📄 Reports</div>", unsafe_allow_html=True)
         report_type = st.radio("Select Report Type", ["Instant", "Daily", "Weekly", "Monthly", "Yearly"])
         if st.button("Generate PDF Report"):
-            filename = generate_report_pdf(report_type.lower())
+            filename = generate_entry_log_pdf() if report_type.lower() == "instant" else None
+            # For simplicity, only Instant report is generated from entry log PDF here.
             if filename and os.path.exists(filename):
                 st.success(f"PDF Report generated: {filename}")
                 with open(filename, "rb") as f:
@@ -651,4 +760,5 @@ elif nav == "About":
                 st.error("Failed to generate Vendor PDF.")
     else:
         st.write("No vendor information available.")
+
 
