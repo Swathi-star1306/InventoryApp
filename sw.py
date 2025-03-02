@@ -351,7 +351,7 @@ def generate_report_pdf(report_type):
     return filename
 
 def display_low_stock_alerts():
-    items = get_items()  # Now get_items() is defined
+    items = get_items()
     low_stock = []
     for item in items:
         try:
