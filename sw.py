@@ -607,13 +607,13 @@ elif nav == "Reports":
             conn2 = get_db_connection()
             c2 = conn2.cursor()
             c2.execute(
-                \"\"\" 
+                """
                 SELECT t.id, u.name, i.name, t.quantity_taken, t.timestamp 
                 FROM transactions t 
                 JOIN users u ON t.user_id = u.id 
                 JOIN items i ON t.item_id = i.id 
                 ORDER BY t.timestamp DESC
-                \"\"\"
+                """
             )
             trans = c2.fetchall()
             conn2.close()
@@ -660,6 +660,5 @@ elif nav == "Account Settings":
                 st.error("Please ensure the PINs match and the username is valid.")
     else:
         st.error("User not found.")
-
 
 
